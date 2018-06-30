@@ -6,14 +6,14 @@ _mklpackage=mklml_win_${_mklversion}
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 pkgver=0.14
-pkgrel=2
+pkgrel=3
 pkgdesc="MKL-DNN - Intel(R) Math Kernel Library for Deep Neural Networks (mingw-w64)"
 arch=('x86_64')
 url='https://github.com/intel/mkl-dnn'
 license=('Apache License 2.0')
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs")
 makedepends=("${MINGW_PACKAGE_PREFIX}-gcc" "${MINGW_PACKAGE_PREFIX}-cmake")
-options=('staticlibs' 'strip')
+options=('staticlibs' '!strip')
 source=(${_realname}-${pkgver}.tar.gz::https://github.com/intel/mkl-dnn/archive/v${pkgver}.tar.gz
         ${_mklpackage}.zip::https://github.com/intel/mkl-dnn/releases/download/v${pkgver}/${_mklpackage}.zip
         0001-mkl-dnn-mingw.patch)
@@ -45,4 +45,6 @@ package() {
   cd "${srcdir}/build-${MINGW_CHOST}"
   make DESTDIR="${pkgdir}" install
   install -Dm644 -t "${pkgdir}${MINGW_PREFIX}/share/doc/mklml" "${srcdir}/${_realname}-${pkgver}/external/${_mklpackage}/license.txt"
+  # Manually strip libmkldnn.dll so that mklml.dll and libiomp5md.dll is left intact.
+  ${MINGW_PREFIX}/bin/strip --strip-unneeded "${pkgdir}${MINGW_PREFIX}/bin/libmkldnn.dll"
 }
