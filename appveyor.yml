@@ -1,0 +1,12 @@
+platform:
+- x64
+
+install:
+- set PATH=C:\msys64\usr\bin;C:\msys64\mingw64\bin;%PATH%
+- pacman -S --needed --noconfirm mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake mingw-w64-x86_64-ca-certificates
+
+build_script:
+- bash -c "MINGW_INSTALLS=mingw64 makepkg-mingw -sLf"
+
+artifacts:
+- path: '*.pkg.tar.xz'
