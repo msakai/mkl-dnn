@@ -149,9 +149,10 @@ void _gemm_convolution_bwd_data_t<run_jit, isa>::execute_backward_data() {
         data_t *_col = this->col_ + (size_t)ithr * jcp.ic * jcp.ks * jcp.os;
 
         if (jcp.id > 1) {
-        #pragma omp for
-        for (size_t i = 0; i < jcp.ngroups*jcp.mb*src_step; ++i)
-            diff_src[i] = 0.;
+            ptrdiff_t diff_src_sz = (ptrdiff_t)(work_amount * src_step);
+            #pragma omp for
+            for (ptrdiff_t i = 0; i < diff_src_sz; ++i)
+                diff_src[i] = 0.;
         }
 
         int g{0}, n{0};
@@ -252,7 +253,7 @@ void _gemm_convolution_bwd_weights_t<run_jit, isa>::execute_backward_weights() {
                     }
                     if (run_jit) {
                         (mb == mb_start && od == 0 ? sgemm_0 :sgemm_1)->sgemm(
-                            "T", "N", &M, &N, &K, &one,
+                            "T", "N", &M, &N, &k, &one,
                             jcp.need_im2col ? _col : _src + od * k,
                             &LDA, _diff_dst, &K,
                             mb == mb_start && od == 0 ? &zero : &one,
@@ -295,7 +296,7 @@ void _gemm_convolution_bwd_weights_t<run_jit, isa>::execute_backward_weights() {
                     size_t offset = offset_ + mb*jcp.ngroups*dst_step;
                     for (int od = 0; od < jcp.od; ++od)
                     for (int oh = 0; oh < jcp.oh; ++oh)
-#                   pragma omp simd reduction(+:db)
+                    PRAGMA_OMP_SIMD(reduction(+:db))
                     for (int ow = 0; ow < jcp.ow; ++ow)
                     {
                         db += diff_dst[offset];

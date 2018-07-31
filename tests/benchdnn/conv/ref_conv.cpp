@@ -17,7 +17,34 @@
 #include "conv/conv_common.hpp"
 namespace conv {
 
-void compute_ref_fwd(const prb_t *p, dnn_mem_t &src_m,
+void compute_ref_fwd(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &wei_m,
+        dnn_mem_t &bia_m, dnn_mem_t &dst_m) {
+    if (p->alg == WINO && p->cfg[SRC].dt == mkldnn_f32) {
+        compute_wino_ref_fwd(p, src_m, wei_m, bia_m, dst_m);
+    } else {
+        compute_ref_direct_fwd(p, src_m, wei_m, bia_m, dst_m);
+    }
+}
+
+void compute_ref_bwd_d(const prb_t *p, dnn_mem_t &diff_src_m, dnn_mem_t &wei_m,
+        dnn_mem_t &diff_dst_m) {
+    if (p->alg == WINO && p->cfg[SRC].dt == mkldnn_f32) {
+        compute_wino_ref_bwd_d(p, diff_src_m, wei_m, diff_dst_m);
+    } else {
+        compute_ref_direct_bwd_d(p, diff_src_m, wei_m, diff_dst_m);
+    }
+}
+
+void compute_ref_bwd_w(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &diff_wei_m,
+        dnn_mem_t &diff_bia_m, dnn_mem_t &diff_dst_m) {
+    if (p->alg == WINO && p->cfg[SRC].dt == mkldnn_f32) {
+        compute_wino_ref_bwd_w(p, src_m, diff_wei_m, diff_bia_m, diff_dst_m);
+    } else {
+        compute_ref_direct_bwd_w(p, src_m, diff_wei_m, diff_bia_m, diff_dst_m);
+    }
+}
+
+void compute_ref_direct_fwd(const prb_t *p, dnn_mem_t &src_m,
         dnn_mem_t &wei_m, dnn_mem_t &bia_m, dnn_mem_t &dst_m) {
     auto ker = [&](float &d, int g, int mb, int oc, int od, int oh, int ow) {
         for (int ic = 0; ic < p->ic/p->g; ++ic) {
@@ -104,7 +131,7 @@ void compute_ref_fwd(const prb_t *p, dnn_mem_t &src_m,
     }
 }
 
-void compute_ref_bwd_d(const prb_t *p, dnn_mem_t &diff_src_m,
+void compute_ref_direct_bwd_d(const prb_t *p, dnn_mem_t &diff_src_m,
         dnn_mem_t &wei_m, dnn_mem_t &diff_dst_m) {
     enum { precompute_size = 16 };
     const bool fast = MAX2(p->kh, p->kw) <= precompute_size;
@@ -274,7 +301,7 @@ void compute_ref_bwd_bias(const prb_t *p, dnn_mem_t &diff_bia_m,
 }
 
 
-void compute_ref_bwd_w(const prb_t *p, dnn_mem_t &src_m,
+void compute_ref_direct_bwd_w(const prb_t *p, dnn_mem_t &src_m,
         dnn_mem_t &diff_wei_m, dnn_mem_t &diff_bia_m, dnn_mem_t &diff_dst_m) {
     compute_ref_bwd_weights(p, src_m, diff_wei_m, diff_dst_m);
     if (!(p->dir & FLAG_BIA)) return;

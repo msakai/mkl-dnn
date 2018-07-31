@@ -129,8 +129,8 @@ protected:
         const size_t sz =
             dst->get_primitive_desc().get_size() / sizeof(data_t);
         // overwriting dst to prevent false positives for test cases.
-# pragma omp parallel for
-        for (size_t i = 0; i < sz; i++) {
+#       pragma omp parallel for
+        for (ptrdiff_t i = 0; i < (ptrdiff_t)sz; i++) {
             dst_data[i] = -32;
         }
 
@@ -153,6 +153,9 @@ protected:
 TEST_P(test, TestsSum) {} \
 INSTANTIATE_TEST_CASE_P(TestSum, test, ::testing::Values( \
     sum_test_params{engine::kind::cpu, \
+    {memory::format::nchw, memory::format::nChw8c}, memory::format::nchw, \
+    {1, 1024, 38, 50}, {1.0f, 1.0f}}, \
+    sum_test_params{engine::kind::cpu,					\
     {memory::format::nchw, memory::format::nchw}, memory::format::nchw, \
     {0, 8, 2, 2}, {1.0f, 1.0f}, true, mkldnn_invalid_arguments}, \
     sum_test_params{engine::kind::cpu, \

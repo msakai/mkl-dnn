@@ -3,7 +3,7 @@
 > Please update your links.
 
 # Intel(R) Math Kernel Library for Deep Neural Networks (Intel(R) MKL-DNN)
-![v0.14 beta](https://img.shields.io/badge/v0.14-beta-orange.svg)
+![v0.15 beta](https://img.shields.io/badge/v0.15-beta-orange.svg)
 
 Intel(R) Math Kernel Library for Deep Neural Networks (Intel(R) MKL-DNN) is
 an open source performance library for deep learning applications. The library
@@ -17,23 +17,29 @@ API in this implementation is not compatible with Intel MKL-DNN and does not
 include certain new and experimental features.
 
 This release contains performance critical functions that improve performance of
-the following deep learning topologies and their variations
+of the following deep learning topologies and variations of these.
 
-|Application                   | Topology
-|:---                          |:---
-|Image recognition             | AlexNet, VGG, GoogleNet, ResNet
-|Semantic segmenation          | FCN, SegNet
-|Object detection              | SSD, Faster R-CNN
+| Application                               | Example topology
+|:---                                       |:---
+| Image recognition                         | AlexNet, VGG, GoogleNet, ResNet
+| Image segmenation                         | FCN, SegNet
+| Volumetric segmentation                   | 3D-Unet
+| Object detection                          | SSD, Faster R-CNN, Yolo
+| Neural Machine Translation (experimental) | GNMT
+| Speech Recognition (experimental)         | DeepSpeech
 
-Intel MKL-DNN is used in the the following software products:
+
+Intel MKL-DNN is used in the following software products:
 * [Caffe\* Optimized for Intel Architecture](https://github.com/intel/caffe)
+* [Chainer\*](https://chainer.org)
 * [DeepBench](https://github.com/baidu-research/DeepBench)
 * [PaddlePaddle\*](http://www.paddlepaddle.org)
 * [Tensorflow\*](https://www.tensorflow.org)
 * [Microsoft\* Cognitive Toolkit (CNTK)](https://www.microsoft.com/en-us/cognitive-toolkit/)
 * [Apache\* MXNet](https://mxnet.apache.org/)
-* [Intel(R) Computer Vision SDK](https://software.intel.com/en-us/computer-vision-sdk)
+* [OpenVINO(TM) toolkit](https://software.intel.com/en-us/openvino-toolkit)
 * [Intel(R) Nervana(TM) Graph](https://github.com/NervanaSystems/ngraph)
+* [Menoh\*](https://github.com/pfnet-research/menoh)
 
 ## License
 Intel MKL-DNN is licensed under

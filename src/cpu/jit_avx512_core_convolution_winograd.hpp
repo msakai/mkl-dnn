@@ -23,7 +23,6 @@
 #include "scratchpad.hpp"
 
 #include "jit_avx512_core_conv_winograd_kernel_f32.hpp"
-#include <chrono>
 
 namespace mkldnn {
 namespace impl {
@@ -72,12 +71,12 @@ struct winograd_scratchpad_avx512_core_t {
         inline void get_scratchpad_size_(const jit_conv_winograd_conf_t &jcp) {
             nthreads_ = omp_get_max_threads();
 
-            U_sz_ = alpha * alpha * jcp.ic * jcp.oc * sizeof(float);
-            V_sz_ = alpha * alpha * jcp.mb * jcp.ic
-                           * (jcp.itiles * jcp.jtiles + jcp.tile_4fma_padding)
+            U_sz_ = size_t(alpha) * alpha * jcp.ic * jcp.oc * sizeof(float);
+            V_sz_ = size_t(alpha) * alpha * jcp.mb * jcp.ic
+                           * jcp.itiles * jcp.jtiles
                            * sizeof(float);
-            M_sz_ = alpha * alpha * jcp.mb * jcp.oc
-                           * (jcp.itiles * jcp.jtiles + jcp.tile_4fma_padding)
+            M_sz_ = size_t(alpha) * alpha * jcp.mb * jcp.oc
+                           * jcp.itiles * jcp.jtiles
                            * sizeof(float);
 
             switch (jcp.sched_policy) {
@@ -91,23 +90,23 @@ struct winograd_scratchpad_avx512_core_t {
                 break;
             case WSCHED_WEI_SDGtWo:
                 U_sz_ = nthreads_
-                    * (alpha * alpha * jcp.ic/jcp.nb_ic * jcp.oc
+                    * (alpha * alpha * jcp.oc * (jcp.ic / jcp.nb_ic)
                       + jcp.ic * jcp.oc * jcp.kh * jcp.kw)
                     * sizeof(float);
                 M_sz_ = nthreads_ * alpha * alpha
-                        * jcp.ntiles / jcp.tile_block
-                        * jcp.oc / jcp.nb_oc * sizeof(float);
+                        * (jcp.ntiles / jcp.tile_block)
+                        * (jcp.oc / jcp.nb_oc) * sizeof(float);
                 V_sz_ = nthreads_ * alpha * alpha
-                        * jcp.ntiles / jcp.tile_block
-                        * jcp.ic / jcp.nb_ic
+                        * (jcp.ntiles / jcp.tile_block)
+                        * (jcp.ic / jcp.nb_ic)
                         * sizeof(float);
                 bias_sz_ = nthreads_ * jcp.oc * sizeof(float);
                 break;
             case WSCHED_WEI_S_D_Giot_W:
                 U_sz_ = (nthreads_ + 1) * alpha * alpha * jcp.ic * jcp.oc
                       * sizeof(float);
-                M_sz_ = alpha * alpha * jcp.oc * jcp.ntiles * sizeof(float);
-                V_sz_ = alpha * alpha * jcp.ic * jcp.ntiles * sizeof(float);
+                M_sz_ = size_t(alpha) * alpha * jcp.oc * jcp.ntiles * sizeof(float);
+                V_sz_ = size_t(alpha) * alpha * jcp.ic * jcp.ntiles * sizeof(float);
                 bias_sz_ = nthreads_ * jcp.oc * sizeof(float);
                 break;
             default:
@@ -129,7 +128,7 @@ struct winograd_scratchpad_avx512_core_t {
         }
 
         scratchpad_t *scratchpad_;
-        int nthreads_;
+        size_t nthreads_;
         size_t scratchpad_sz_ = 0, U_sz_ = 0, V_sz_ = 0, M_sz_ = 0,
                bias_sz_ = 0;
         size_t U_offset_ = 0;
@@ -190,7 +189,7 @@ struct _jit_avx512_core_convolution_winograd_fwd_t
                 const typename pd_t::base_class *hint_fwd_pd)
             : _cpu_convolution_fwd_pd_t<with_relu>(engine, adesc, attr,
                     hint_fwd_pd)
-            , jcp_({}) {}
+            , jcp_() {}
 
         DECLARE_COMMON_PD_T(
                 JIT_IMPL_NAME_HELPER("jit_wino:", avx512_core, ""),
@@ -285,7 +284,7 @@ struct jit_avx512_core_convolution_winograd_bwd_data_t
                 const primitive_attr_t *attr,
                 const convolution_fwd_pd_t *hint_fwd_pd)
             : cpu_convolution_bwd_data_pd_t(engine, adesc, attr, hint_fwd_pd)
-            , jcp_({}) {}
+            , jcp_() {}
 
         DECLARE_COMMON_PD_T(
                 JIT_IMPL_NAME_HELPER("jit_wino:", avx512_core, ""),
@@ -377,7 +376,7 @@ struct jit_avx512_core_convolution_winograd_bwd_weights_t
                 const convolution_fwd_pd_t *hint_fwd_pd)
             : cpu_convolution_bwd_weights_pd_t(engine, adesc, attr,
                     hint_fwd_pd)
-            , jcp_({}) {}
+            , jcp_() {}
 
         DECLARE_COMMON_PD_T(
                 JIT_IMPL_NAME_HELPER("jit_wino:", avx512_core, ""),

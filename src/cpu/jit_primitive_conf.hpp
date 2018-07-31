@@ -46,7 +46,7 @@ struct jit_conv_conf_t {
 
     int ndims;
     int mb;
-    int ngroups, ic, oc;
+    int ngroups, ic, oc, oc_without_padding;
     int id, ih, iw, od, oh, ow;
     int f_pad, l_pad, t_pad;
     int back_pad, r_pad, b_pad;
@@ -97,6 +97,8 @@ struct jit_conv_conf_t {
     int is_oc_scale;
     // dw conv
     int nb_ch, ch_block, nb_ch_blocking;
+    bool is_depthwise;
+    int aligned_threads;
 };
 
 struct jit_conv_conf_u8s8s32x_wino_t {
@@ -134,6 +136,7 @@ struct jit_conv_conf_u8s8s32x_wino_t {
     bool with_bias, with_relu;
     float relu_negative_slope;
     bool with_sum;
+    bool small_mb;
 
     int xb, yb;
     int inp_stride;
@@ -253,6 +256,7 @@ struct jit_wino_transform_call_s {
     size_t tile_block;
     size_t tile_block_ur;
     size_t nb_tile_block_ur;
+    size_t tile_count;
     size_t tj;
     size_t ti;
     void *src;
@@ -269,7 +273,7 @@ struct jit_1x1_conv_conf_t {
     conv_version_t ver;
 
     int mb;
-    int ngroups, ic, oc;
+    int ngroups, ic, oc, oc_without_padding;
     int iw, ih, ow, oh;
     int l_pad, t_pad;
     int kh, kw;

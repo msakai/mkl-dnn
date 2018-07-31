@@ -667,8 +667,8 @@ mkldnn_dilated_convolution_backward_weights_desc_init(
 
 /** @addtogroup c_api_deconvolution Deconvolution
  * A primitive to compute deconvolution using different algorithms.
- * something goes here.
- *  * @{ */
+ *
+ * @{ */
 
 
 /** Initializes a deconvolution descriptor @p deconv_desc for forward propagation
@@ -724,6 +724,17 @@ mkldnn_status_t MKLDNN_API mkldnn_deconvolution_backward_weights_desc_init(
 /** @addtogroup c_api_eltwise Eltwise
  * A primitive to compute element wise operations like parametric rectifier
  * linear unit (ReLU).
+ *
+ * Both forward and backward passes support in-place operation, i.e. src
+ * and dst point to the same memory for forward, and diff_dst and diff_src
+ * point to the same memory for backward pass.
+ *
+ * @warning Since for backward pass original src is required, in-place forward
+ * pass in general cannot be applied during training. However for some kinds of
+ * element wise operations (namely ReLU with alpha parameter equals 0) dst and
+ * src can be interchangeable for the backward pass, which allows performing
+ * in-place forward even for training.
+ *
  * @{ */
 
 /** Initializes a @p eltwise_desc for forward propagation using @p prop_kind
@@ -797,10 +808,17 @@ mkldnn_status_t MKLDNN_API mkldnn_softmax_forward_desc_init(
         mkldnn_softmax_desc_t *softmax_desc, mkldnn_prop_kind_t prop_kind,
         const mkldnn_memory_desc_t *data_desc, int softmax_axis);
 
+/** Initializes a @p softmax_desc for backward propagation using memory
+ * descriptors @p diff_desc and @p data_desc. */
+mkldnn_status_t MKLDNN_API mkldnn_softmax_backward_desc_init(
+        mkldnn_softmax_desc_t *softmax_desc,
+        const mkldnn_memory_desc_t *diff_desc,
+        const mkldnn_memory_desc_t *data_desc, int softmax_axis);
+
 /** @} */
 
 /** @addtogroup c_api_pooling Pooling
- * A primitive to perform max, min, or average pooling.
+ * A primitive to perform max or average pooling.
  * 
  * Max pooling:
  * \f[dst[n][oc][oh][ow] =
@@ -888,17 +906,23 @@ mkldnn_status_t MKLDNN_API mkldnn_lrn_backward_desc_init(
 /** @} */
 
 /** @addtogroup c_api_batch_normalization Batch Normalization
- * A primitive to perform batch normalization
+ * A primitive to perform batch normalization.
+ *
  * \f[dst[n][c][h][w] = \gamma[c] \frac{src[n][c][h][w] - \mu[c]}
  *                      {\sqrt{\sigma[c] + eps}} + \beta[c],\f]
  *
  * where \f$\gamma[c], \beta[c]\f$ are weights and bias for a channel and,
  *
  * \f$\mu[c] = \frac{1}{NHW} \sum\limits_{whn} src[n][c][h][w]\f$,
- * \f$\sigma[c] = \frac{1}{NHW} \sum\limits_{whn} 
+ * \f$\sigma[c] = \frac{1}{NHW} \sum\limits_{whn}
  *                              (src[n][c][h][w] - \mu[c])^2\f$,
  *
  * and eps is a constant to improve numerical stability.
+ *
+ * Both forward and backward passes support in-place operation, i.e. src
+ * and dst point to the same memory for forward, and diff_dst and diff_src
+ * point to the same memory for backward pass.
+ *
  * @{ */
 
 /** Initializes a batch normalization descriptor @p bnrm_desc for forward
@@ -931,11 +955,12 @@ mkldnn_status_t MKLDNN_API mkldnn_batch_normalization_backward_desc_init(
 
 /** @addtogroup c_api_inner_product Inner product
  * A primitive to compute an inner product.
+ *
  * Inner product layer is also known as fully connected layer.
  * with spatial dimension:
- * 
+ *
  * \f[dst[n][oc] = \sum\limits_{ic, kh, kw}
- *                 src[n][ic][kh][kw] \cdot weights[oc][ic][kh][kw] 
+ *                 src[n][ic][kh][kw] \cdot weights[oc][ic][kh][kw]
  *                 + bias[oc]\f]
  * @{ */
 
@@ -982,13 +1007,16 @@ mkldnn_status_t MKLDNN_API mkldnn_inner_product_backward_weights_desc_init(
 
 /** @} */
 
-/** @addtogroup c_api_convolution_relu Convolution followed by ReLU
+/** @addtogroup c_api_convolution_relu Convolution followed by ReLU (deprecated)
  * A merged primitive to compute a convolution followed by relu.
  * @{ */
 
 /** Initializes a merged convolution-relu descriptor @p conv_relu_desc for
  * forward propagation (supported inference mode only) using convolution
- * descriptor @p conv_desc and ReLU parameter @p negative slope. */
+ * descriptor @p conv_desc and ReLU parameter @p negative slope.
+ *
+ * @deprecated use mkldnn_convolution_desc_init with
+ * mkldnn_post_ops_append_eltwise to append ReLU */
 mkldnn_status_t MKLDNN_API mkldnn_convolution_relu_desc_init(
         mkldnn_convolution_relu_desc_t *conv_relu_desc,
         const mkldnn_convolution_desc_t *conv_desc, float negative_slope);
@@ -1003,7 +1031,8 @@ mkldnn_status_t MKLDNN_API mkldnn_convolution_relu_desc_init(
 /**
  * Initializes a recurrent cell descriptor @p rnn_cell_desc
  * using @p rnn_cell_desc, @p kind (possible values are
- *  #mkldnn_vanilla_rnn, #mkldnn_vanilla_lstm, #mkldnn_vanilla_gru),
+ *  #mkldnn_vanilla_rnn, #mkldnn_vanilla_lstm, #mkldnn_vanilla_gru,
+ *  #mkldnn_gru_linear_before_reset),
  *  @p f (possible values are #mkldnn_eltwise_relu,
  *   #mkldnn_eltwise_tanh), @p flags, @p alpha, and @p clipping.
  */
@@ -1127,6 +1156,28 @@ mkldnn_status_t MKLDNN_API mkldnn_stream_destroy(mkldnn_stream_t stream);
  * @note
  *     Dumping information might affect performance */
 mkldnn_status_t MKLDNN_API mkldnn_verbose_set(int level);
+
+/** @} */
+
+/** @addtogroup c_api_blas BLAS functions
+ * @{ */
+
+/** SGEMM performs matrix-matrix multiplication operation
+ * C := alpha*op( A )*op( B ) + beta*C,
+ * where  op( X ) is one of
+ * op( X ) = X or op( X ) = X**T,
+ * alpha and beta are scalars, and A, B and C are matrices, with op( A )
+ * an m by k matrix, op( B ) a k by n matrix and C an m by n matrix.
+ * @note
+ *      API is different compared to standard BLAS routine
+ *      as it returns mkldnn_status_t for error handling.
+ *      XERBLA is not supported: no error message will be printed
+ *      in case of incorrect parameters */
+mkldnn_status_t MKLDNN_API mkldnn_sgemm(const char *transa, const char *transb,
+        const int *M, const int *N, const int *K,
+        const float *alpha, const float *A, const int *lda,
+        const float *B, const int *ldb,
+        const float *beta, float *C, const int *ldc);
 
 /** @} */
 

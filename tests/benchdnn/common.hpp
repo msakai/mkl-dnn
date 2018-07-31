@@ -39,10 +39,14 @@
 #define CONCAt2(a,b) a ## b
 #define CONCAT2(a,b) CONCAt2(a,b)
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__GNUC__)
 #define strncasecmp _strnicmp
 #define strcasecmp _stricmp
 #define __PRETTY_FUNCTION__ __FUNCSIG__
+#endif
+
+#if defined(_MSC_VER) && !defined(__INTEL_COMPILER)
+#define collapse(x)
 #endif
 
 #define OK 0
@@ -51,7 +55,7 @@
 enum { CRIT = 1, WARN = 2 };
 
 #define SAFE(f, s) do { \
-    int status = f; \
+    int status = (f); \
     if (status != OK) { \
         if (s == CRIT || s == WARN) { \
             fprintf(stderr, "@@@ error [%s:%d]: '%s' -> %d\n", \
@@ -64,7 +68,7 @@ enum { CRIT = 1, WARN = 2 };
 } while(0)
 
 #define SAFE_V(f) do { \
-    int status = f; \
+    int status = (f); \
     if (status != OK) { \
         fprintf(stderr, "@@@ error [%s:%d]: '%s' -> %d\n", \
                 __PRETTY_FUNCTION__, __LINE__, STRINGIFY(f), status); \
@@ -163,5 +167,13 @@ bool maybe_skip(const char *skip_impl, const char *impl_str);
 
 typedef int (*bench_f)(int argc, char **argv, bool main_bench);
 int batch(const char *fname, bench_f bench);
+
+/* returns 1 with given probability */
+int flip_coin(ptrdiff_t seed, float probability);
+
+int div_up(const int a, const int b);
+
+/* set '0' across *arr:+size */
+void array_set(char *arr, size_t size);
 
 #endif

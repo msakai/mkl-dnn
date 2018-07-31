@@ -68,7 +68,7 @@ void desc2str(const desc_t *d, char *buffer, bool canonical = false);
  */
 typedef struct dt_conf_t {
     mkldnn_data_type_t dt;
-    int min, max; /* representative */
+    double min, max; /* representative */
     int f_min, f_max; /* fill range */
     int f_base; /* fill base, use 0 */
     int f_step; /* fill step, use 1 */
@@ -200,6 +200,20 @@ void compute_ref_bwd_d(const prb_t *p, dnn_mem_t &diff_src_m, dnn_mem_t &wei_m,
         dnn_mem_t &diff_dst_m);
 void compute_ref_bwd_w(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &diff_wei_m,
         dnn_mem_t &diff_bia_m, dnn_mem_t &diff_dst_m);
+
+void compute_ref_direct_fwd(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &wei_m,
+        dnn_mem_t &bia_m, dnn_mem_t &dst_m);
+void compute_ref_direct_bwd_d(const prb_t *p, dnn_mem_t &diff_src_m, dnn_mem_t &wei_m,
+        dnn_mem_t &diff_dst_m);
+void compute_ref_direct_bwd_w(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &diff_wei_m,
+        dnn_mem_t &diff_bia_m, dnn_mem_t &diff_dst_m);
+
+void compute_wino_ref_fwd(const prb_t *p, dnn_mem_t &src_m, dnn_mem_t &wei_m,
+        dnn_mem_t &bia_m, dnn_mem_t &dst_m);
+void compute_wino_ref_bwd_d(const prb_t *p, dnn_mem_t &idiff_src_m,
+        dnn_mem_t &wei_m, dnn_mem_t &diff_dst_m);
+void compute_wino_ref_bwd_w(const prb_t *p, dnn_mem_t &src_m,
+        dnn_mem_t &diff_wei_m, dnn_mem_t &diff_bia_m, dnn_mem_t &diff_dst_m);
 
 void perf_report(const prb_t *p, const res_t *r, const char *pstr);
 

@@ -39,7 +39,7 @@ struct _jit_avx512_common_convolution_fwd_t : public cpu_primitive_t {
                 const typename pd_t::base_class *hint_fwd_pd)
             : _cpu_convolution_fwd_pd_t<with_relu>(engine, adesc, attr,
                     hint_fwd_pd)
-            , jcp_({})
+            , jcp_()
         {
         }
 
@@ -70,7 +70,7 @@ struct _jit_avx512_common_convolution_fwd_t : public cpu_primitive_t {
             return jit_avx512_common_conv_fwd_kernel::init_conf(
                     jcp_, this->cdesc_(), this->src_pd_, this->weights_pd_,
                     this->dst_pd_,this->bias_pd_, *this->attr(),
-                    with_relu, this->negative_slope());
+                    omp_get_max_threads(), with_relu, this->negative_slope());
         }
 
         inline int ndims() { return this->cdesc_().src_desc.ndims; }
@@ -81,11 +81,23 @@ struct _jit_avx512_common_convolution_fwd_t : public cpu_primitive_t {
     _jit_avx512_common_convolution_fwd_t(const pd_t *pd,
             const input_vector &inputs, const output_vector &outputs)
         : cpu_primitive_t(&conf_, inputs, outputs), conf_(*pd)
+        , padded_bias_(nullptr)
     {
         kernel_ = new jit_avx512_common_conv_fwd_kernel(conf_.jcp_,
                     *conf_.attr());
+
+        if (conf_.want_padded_bias()) {
+            const auto &j = conf_.jcp_;
+            assert(j.ngroups == 1);
+            padded_bias_ = (dst_data_t *)malloc(sizeof(dst_data_t) * j.oc, 64);
+            for (int oc = j.oc_without_padding; oc < j.oc; ++oc)
+                padded_bias_[oc] = 0;
+        }
     }
-    ~_jit_avx512_common_convolution_fwd_t() { delete kernel_; };
+    ~_jit_avx512_common_convolution_fwd_t() {
+        delete kernel_;
+        free(padded_bias_);
+    };
 
     typedef typename prec_traits<src_type>::type src_data_t;
     typedef typename prec_traits<wei_type>::type wei_data_t;
@@ -103,6 +115,7 @@ private:
     void execute_forward_3d();
     pd_t conf_;
     jit_avx512_common_conv_fwd_kernel *kernel_;
+    dst_data_t *padded_bias_;
 };
 
 template <impl::data_type_t src_type, impl::data_type_t wei_type = src_type,
@@ -125,7 +138,7 @@ struct jit_avx512_common_convolution_bwd_data_t: public cpu_primitive_t {
                 const primitive_attr_t *attr,
                 const convolution_fwd_pd_t *hint_fwd_pd)
             : cpu_convolution_bwd_data_pd_t(engine, adesc, attr, hint_fwd_pd)
-            , jcp_({})
+            , jcp_()
         {}
 
         DECLARE_COMMON_PD_T(
@@ -226,7 +239,7 @@ struct jit_avx512_common_convolution_bwd_weights_t: public cpu_primitive_t {
                 const primitive_attr_t *attr,
                 const convolution_fwd_pd_t *hint_fwd_pd)
             : cpu_convolution_bwd_weights_pd_t(engine, adesc, attr, hint_fwd_pd)
-            , jcp_({}) {}
+            , jcp_() {}
 
         DECLARE_COMMON_PD_T(
                 JIT_IMPL_NAME_HELPER("jit:", avx512_common, ""),
@@ -292,6 +305,7 @@ struct jit_avx512_common_convolution_bwd_weights_t: public cpu_primitive_t {
         if (acc_ker_)
             delete acc_ker_;
         delete reducer_bias_;
+        free(padded_bias_);
 
         free(tr_src_);
         free(ws_reduction_);
@@ -328,6 +342,7 @@ private:
     jit_trans_dst_t *trans_dst_kernel_;
     cpu_accumulator_1d_t<diff_weights_type> *acc_ker_;
     cpu_reducer_t<diff_weights_type> *reducer_bias_;
+    diff_weights_data_t *padded_bias_;
 
     src_data_t *tr_src_;
     diff_dst_data_t *tr_diff_dst_;

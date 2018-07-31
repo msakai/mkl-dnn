@@ -37,23 +37,25 @@ namespace cpu {
             float *ws_gates_, float *states_t_l_, float *states_t_lm1_, \
             float *states_tm1_l_, float *diff_states_t_l_,              \
             float *diff_states_t_lp1_, float *diff_states_tp1_l_,       \
-            const float *bias_)
+            const float *bias_, float *ws_grid_, float *ws_cell_)
 
 #define cell_execution_sig(f)                                                 \
     void f(int dic, int slc, int sic, int wic, int batch, int n_gates,        \
             int n_states, float *states_t_l_, float *diff_states_t_l_,        \
-            const float *w_input_, const float *w_state_, const float *bias_, \
+            float **w_input_, float **w_state_, const float *bias_,           \
             float *states_t_lm1_, float *states_tm1_l_,                       \
             float *diff_states_t_lp1_, float *diff_states_tp1_l_,             \
             float *diff_w_input_, float *diff_w_state_, float *diff_bias_,    \
-            float *ws_gates_)
+            float *ws_gates_, float *ws_grid_, float *ws_cell_)
 
 #define grid_execution_sig(f)                                              \
     void f(int dic, int slc, int sic, int wic, int batch, int n_layer,     \
             int n_direction, int n_iter, int n_gates, int n_states,        \
-            float **weights_input_, float **weights_states_,               \
+            int n_bias, float **weights_input_, int n_parts_wei_i,         \
+            float **weights_states_, int n_parts_wei_st,                   \
             const float *bias_, float *ws_states_, float *ws_diff_states_, \
-            float *ws_gates_, float *diff_weights_layer_,                  \
+            float *ws_gates_, float *ws_cell_, float *ws_grid_,            \
+            int ws_per_cell, float *diff_weights_layer_,                   \
             float *diff_weights_iter_, float *diff_bias_)
 
 #define gemm_sig(f)                                                          \
@@ -64,9 +66,10 @@ namespace cpu {
 #define packing_sig(f)                                               \
     void f(int n_layer, int n_direction, int n_weights, int n_gates, \
             int batch, int OC_size, int IC_size, float **weights_,   \
-            const float *w_)
+            int n_parts, int *gates_per_part, const float *w_)
 
-#define free_packed_sig(f) void f(int n_layer, float **weights_)
+#define free_packed_sig(f) void f(int n_layer, int n_direction, int n_parts, \
+            float **weights_)
 
 template <alg_kind_t alg_kind, prop_kind_t prop_kind>
 float activation(float s, float alpha, float cliping, float dd);
@@ -116,7 +119,8 @@ struct _ref_rnn_common_t : public cpu_primitive_t {
                     && false
 #endif
                     && one_of(cell_kind, alg_kind::vanilla_rnn,
-                               alg_kind::vanilla_lstm, alg_kind::vanilla_gru)
+                               alg_kind::vanilla_lstm, alg_kind::vanilla_gru,
+                               alg_kind::gru_linear_before_reset)
                     && implication(aprop == prop_kind::forward,
                                one_of(this->desc()->prop_kind, forward_training,
                                        forward_inference))
@@ -127,7 +131,8 @@ struct _ref_rnn_common_t : public cpu_primitive_t {
                 return status::unimplemented;
 
             ok = ok && utils::one_of(cell_kind, alg_kind::vanilla_rnn,
-                               alg_kind::vanilla_lstm, alg_kind::vanilla_gru);
+                               alg_kind::vanilla_lstm, alg_kind::vanilla_gru,
+                               alg_kind::gru_linear_before_reset);
 
             /// @todo check data layouts for all input tensors
             ok = ok && this->desc()->src_layer_desc.format == tnc
@@ -165,13 +170,16 @@ struct _ref_rnn_common_t : public cpu_primitive_t {
                                || (this->L() == 1))
                     && (this->SIC() == this->DIC() || (this->T() == 1));
 
-            // initialize the workspace_pd
-            dims_t ws_dims = { (dim_t)this->get_ws_size() };
-            memory_desc_t ws_d;
-            mkldnn_memory_desc_init(
-                    &ws_d, 1, ws_dims, impl::data_type::f32, memory_format::x);
-            this->ws_pd_ = cpu_memory_t::pd_t(this->engine(), &ws_d);
-            return ok ? status::success : status::unimplemented;
+            // initialize the workspace_pd if needed
+	    if (this->desc()->prop_kind != forward_inference){
+	        dims_t ws_dims = { (dim_t)this->get_ws_size() };
+	        memory_desc_t ws_d;
+	        mkldnn_memory_desc_init(
+                        &ws_d, 1, ws_dims, impl::data_type::f32, memory_format::x);
+                this->ws_pd_ = cpu_memory_t::pd_t(this->engine(), &ws_d);
+	    }
+
+	    return ok ? status::success : status::unimplemented;
         }
     };
 
@@ -196,9 +204,9 @@ struct _ref_rnn_common_t : public cpu_primitive_t {
                 packing_t &p, free_packed_t &f) {
             g = packed_gemm ? &class_name::packed_gemm : &class_name::gemm;
             p = pack_w ? &class_name::pack_weights :
-                         &class_name::no_pack_weights;
+                             &class_name::no_pack_weights;
             f = pack_w ? &class_name::free_packed_weights :
-                         &class_name::free_no_packed_weights;
+                             &class_name::free_no_packed_weights;
         };
 
         const bool weights_pack_cond = USE_MKL_PACKED_GEMM && conf_.T() > 1;
@@ -218,9 +226,11 @@ struct _ref_rnn_common_t : public cpu_primitive_t {
 
         switch (conf_.cell_kind()) {
         case alg_kind::vanilla_lstm:
+            cell_func = &class_name::cell_execution;
             elemwise_func = &class_name::lstm_elemwise;
             break;
         case alg_kind::vanilla_rnn: // @todo switch on cell kind
+            cell_func = &class_name::cell_execution;
             elemwise_func = &class_name::rnn_elemwise;
             switch (conf_.activation_kind()) {
             case alg_kind::eltwise_relu:
@@ -232,9 +242,13 @@ struct _ref_rnn_common_t : public cpu_primitive_t {
             default: break;
             }
             break;
-
-        // case alg_kind::vanilla_gru:
-        //     elemwise_func = &class_name::gru_elemwise; break;
+        case alg_kind::vanilla_gru:
+            cell_func = &class_name::cell_execution_gru;
+            break;
+        case alg_kind::gru_linear_before_reset:
+            cell_func = &class_name::cell_execution_gru_lbr;
+            elemwise_func = &class_name::gru_lbr_elemwise;
+            break;
         default: break;
         }
 
@@ -252,8 +266,9 @@ struct _ref_rnn_common_t : public cpu_primitive_t {
         /// wavefront
         grid_computation = &class_name::linear_execution;
 
-        conf_.set_ws_offsets(
-                ws_gates_offset_, ws_states_offset_, ws_diff_states_offset_);
+        conf_.set_offsets(
+                ws_gates_offset_, ws_states_offset_, ws_diff_states_offset_,
+                ws_grid_comp_offset_, ws_cell_comp_offset_);
 
         // we need to allocate memory for:
         // - the states to compute a pass.
@@ -277,27 +292,14 @@ struct _ref_rnn_common_t : public cpu_primitive_t {
         //   = TODO: allocate only n_layer_wav * batch * n_gates * dic for
         //   wavefront execution (inference)
 
-        switch (conf_.desc()->prop_kind) {
-        case prop_kind::forward_inference:
-            use_scratchpad_ = (memory(conf_.ws_idx()) == nullptr);
-            break;
-        case prop_kind::forward_training:
-            use_scratchpad_ = (memory(conf_.ws_idx()) == nullptr);
-            assert(use_scratchpad_ == false);
-            break;
-        case prop_kind::backward:
-            use_scratchpad_ = (input_memory(conf_.ws_idx()) == nullptr);
-            assert(use_scratchpad_ == false);
-            break;
-        default: assert(!"invalid prop_kind");
-        }
+	use_scratchpad_for_ws_ = (conf_.desc()->prop_kind == prop_kind::forward_inference);
+        use_scratchpad_ = use_scratchpad_for_ws_ || conf_.is_lbr();
+        if (use_scratchpad_)
+            scratchpad_ =
+                create_scratchpad(conf_.get_scratchpad_size() * sizeof(float));
 
-        if (use_scratchpad_) {
-            scratchpad_
-                    = create_scratchpad(conf_.get_ws_size() * sizeof(float));
-        }
-
-        int ptr_wei_sz = conf_.L() * conf_.D();
+        int max_nparts = (conf_.cell_kind() == alg_kind::vanilla_gru) ? 2 : 1;
+        int ptr_wei_sz = conf_.L() * conf_.D() * max_nparts;
         ptr_wei_input_ = (float **)malloc(sizeof(float *) * ptr_wei_sz, 64);
         ptr_wei_state_ = (float **)malloc(sizeof(float *) * ptr_wei_sz, 64);
     }
@@ -320,9 +322,11 @@ private:
     grid_execution_sig(linear_execution);
     // grid_execution_sig(wavefront_execution);
     cell_execution_sig(cell_execution);
+    cell_execution_sig(cell_execution_gru);
+    cell_execution_sig(cell_execution_gru_lbr);
     elemwise_sig(rnn_elemwise);
     elemwise_sig(lstm_elemwise);
-    // elemwise_sig(gru_elemwise);
+    elemwise_sig(gru_lbr_elemwise);
     gemm_sig(gemm);
     gemm_sig(packed_gemm);
     packing_sig(pack_weights);
@@ -333,9 +337,9 @@ private:
     float (*activation_func)(float dd, float s, float alpha, float cliping);
 
     void copy_init_layer(bool lr, bool rl, int n_direction, int n_layer,
-            int n_iter, int batch, int slc, int dlc, int wic, int n_states,
-            float *ws_states_, float *ws_diff_states_, const float *xt_,
-            const float *diff_dst_layer);
+            int n_iter, int batch, int slc, int dic, int dlc, int wic,
+            int n_states, float *ws_states_, float *ws_diff_states_,
+            const float *xt_, const float *diff_dst_layer);
     void copy_init_iter(int n_layer, int n_direction, int n_states, int batch,
             int sic, int dic, int wic, int n_iter, float *ws_states_,
             float *ws_diff_states_, const float *firstit_states_,
@@ -349,18 +353,24 @@ private:
             int sic, int dic, int wic, int n_iter, float *dst_iter_,
             float *diff_src_iter, const float *ws_states_,
             const float *ws_diff_states_);
-
+    void gates_reduction(int n_gates, int dic, int batch,
+            const float *ws_gates_, float *diff_bias_);
     pd_t conf_;
     bool use_scratchpad_;
+    bool use_scratchpad_for_ws_;
     scratchpad_t *scratchpad_;
 
-    int ws_gates_offset_;
-    int ws_states_offset_;
-    int ws_diff_states_offset_;
+    size_t ws_gates_offset_;
+    size_t ws_states_offset_;
+    size_t ws_diff_states_offset_;
+    size_t ws_grid_comp_offset_;
+    size_t ws_cell_comp_offset_;
 
     float *ws_gates_;
     float *ws_states_;
     float *ws_diff_states_;
+    float *ws_cell_;
+    float *ws_grid_;
     int n_output_features;
 
     float **ptr_wei_input_;
@@ -368,7 +378,7 @@ private:
 
     execution_direction exec_dir;
     grid_execution_f grid_computation;
-    // cell_execution_f cell_execution;
+    cell_execution_f cell_func;
 
     packing_t weights_input_pack_func;
     packing_t weights_state_pack_func;

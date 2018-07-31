@@ -41,11 +41,14 @@
 #include "jitprofiling.h"
 #endif
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__GNUC__)
 #   define STRUCT_ALIGN(al, ...) __declspec(align(al)) __VA_ARGS__
-#   define OFFSET_SHADOWSPACE 0x28
 #else
 #   define STRUCT_ALIGN(al, ...) __VA_ARGS__ __attribute__((__aligned__(al)))
+#endif
+
+#if defined(_WIN32)
+#   define OFFSET_SHADOWSPACE 0x28
 #endif
 
 #define DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_name) \
@@ -60,6 +63,7 @@ namespace cpu {
 typedef enum {
     isa_any,
     sse42,
+    avx,
     avx2,
     avx512_common,
     avx512_core,
@@ -75,11 +79,14 @@ template <> struct cpu_isa_traits<sse42> {
     static constexpr int vlen = 16;
     static constexpr int n_vregs = 16;
 };
-template <> struct cpu_isa_traits<avx2> {
+template <> struct cpu_isa_traits<avx> {
     static constexpr int vlen_shift = 5;
     static constexpr int vlen = 32;
     static constexpr int n_vregs = 16;
 };
+template <> struct cpu_isa_traits<avx2>:
+    public cpu_isa_traits<avx> {};
+
 template <> struct cpu_isa_traits<avx512_common> {
     static constexpr int vlen_shift = 6;
     static constexpr int vlen = 64;
@@ -172,6 +179,8 @@ static inline bool mayiuse(const cpu_isa_t cpu_isa) {
     switch (cpu_isa) {
     case sse42:
         return cpu.has(Cpu::tSSE42);
+    case avx:
+        return cpu.has(Cpu::tAVX);
     case avx2:
         return cpu.has(Cpu::tAVX2);
     case avx512_common:
@@ -338,6 +347,11 @@ public:
             prefetcht2(a);
     }
 
+    void uni_vzeroupper() {
+        if (mayiuse(avx) && !mayiuse(avx512_mic))
+            vzeroupper();
+    }
+
     void postamble() {
         for (size_t i = 0; i < num_abi_save_gpr_regs; ++i)
             pop(Xbyak::Reg64(abi_save_gpr_regs[num_abi_save_gpr_regs - 1 - i]));
@@ -346,6 +360,7 @@ public:
                 movdqu(Xbyak::Xmm(xmm_to_preserve_start + i), ptr[rsp + i * xmm_len]);
             add(rsp, xmm_to_preserve * xmm_len);
         }
+        uni_vzeroupper();
         ret();
     }
 
@@ -473,6 +488,20 @@ public:
         vdivps(x, op1, op2);
     }
 
+    void uni_vdivps(const Xbyak::Xmm &x, const Xbyak::Operand &op1,
+                    const Xbyak::Operand &op2, const Xbyak::Xmm &buf) {
+        movups(buf, op1);
+        divps(buf, op2);
+        if (x.getIdx() != buf.getIdx()) {
+            movups(x, buf);
+        }
+    }
+
+    void uni_vdivps(const Xbyak::Ymm &x, const Xbyak::Operand &op1,
+                    const Xbyak::Operand &op2, const Xbyak::Ymm &buf) {
+        vdivps(x, op1, op2);
+    }
+
     void uni_vaddps(const Xbyak::Xmm &x, const Xbyak::Operand &op1,
                     const Xbyak::Operand &op2 = Xbyak::Operand()) {
         assert(x.getIdx() == op1.getIdx());
@@ -500,6 +529,20 @@ public:
     }
     void uni_vsubps(const Xbyak::Ymm &x, const Xbyak::Operand &op1,
                     const Xbyak::Operand &op2 = Xbyak::Operand()) {
+        vsubps(x, op1, op2);
+    }
+
+    void uni_vsubps(const Xbyak::Xmm &x, const Xbyak::Operand &op1,
+                    const Xbyak::Operand &op2, const Xbyak::Xmm &buf) {
+        movups(buf, op1);
+        subps(buf, op2);
+        if (x.getIdx() != buf.getIdx()) {
+            movups(x, buf);
+        }
+    }
+
+    void uni_vsubps(const Xbyak::Ymm &x, const Xbyak::Operand &op1,
+                    const Xbyak::Operand &op2, const Xbyak::Ymm &buf) {
         vsubps(x, op1, op2);
     }
 
@@ -716,7 +759,8 @@ public:
             FILE *fp = mkldnn_fopen(fname, "w+");
             // Failure to dump code is not fatal
             if (fp) {
-                fwrite(code, getSize(), 1, fp);
+                size_t unused = fwrite(code, getSize(), 1, fp);
+                UNUSED(unused);
                 fclose(fp);
             }
         }
@@ -726,7 +770,7 @@ public:
     void register_code(const Xbyak::uint8 *code) const {
 #ifdef JIT_PROFILING_VTUNE
         if (iJIT_IsProfilingActive() == iJIT_SAMPLING_ON) {
-            iJIT_Method_Load jmethod = {0};
+            auto jmethod = iJIT_Method_Load();
             jmethod.method_id = iJIT_GetNewMethodID();
             jmethod.method_name = (char *)name();
             jmethod.class_file_name = NULL;

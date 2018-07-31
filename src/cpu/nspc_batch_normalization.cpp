@@ -22,6 +22,13 @@
 #include "nspc_batch_normalization.hpp"
 #include "type_helpers.hpp"
 
+// clang6 generates incorrect code with OMP_SIMD in some particular cases
+#if (defined __clang_major__) && (__clang_major__ == 6)
+#define SAFE_TO_USE_OMP_SIMD 0
+#else
+#define SAFE_TO_USE_OMP_SIMD 1
+#endif
+
 namespace mkldnn {
 namespace impl {
 namespace cpu {
@@ -52,6 +59,8 @@ nspc_batch_normalization_fwd_t::~nspc_batch_normalization_fwd_t() {
 void nspc_batch_normalization_fwd_t::execute_forward() {
     auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
     const bool save_stats = conf_.is_training();
+    const bool is_training = conf_.is_training();
+    const bool fuse_bn_relu = conf_.fuse_bn_relu();
     const bool calculate_stats = !conf_.stats_is_src();
     const bool with_relu = conf_.with_relu_post_op();
     data_t *mean, *variance;
@@ -101,9 +110,10 @@ void nspc_batch_normalization_fwd_t::execute_forward() {
 
             for (int n = N_s; n < N_e; n++)
                 for (int sp = 0; sp < SP; sp++)
-#pragma omp simd
+                    PRAGMA_OMP_SIMD()
                     for (int c = 0; c < C; c++)
-                        ws_reduce[C * ithr + c] += src[n * SP * C + sp * C + c];
+                        ws_reduce[C * ithr + c] += src[(size_t)n * SP * C
+                            + sp * C + c];
 
 #pragma omp barrier
             for (int c = C_s; c < C_e; c++) {
@@ -120,9 +130,10 @@ void nspc_batch_normalization_fwd_t::execute_forward() {
 
             for (int n = N_s; n < N_e; n++)
                 for (int sp = 0; sp < SP; sp++)
-#pragma omp simd
+                    PRAGMA_OMP_SIMD()
                     for (int c = 0; c < C; c++) {
-                        data_t m = src[n * SP * C + sp * C + c] - mean_loc[c];
+                        data_t m = src[(size_t)n * SP * C + sp * C + c]
+                            - mean_loc[c];
                         ws_reduce[C * ithr + c] += m * m;
                     }
 #pragma omp barrier
@@ -142,26 +153,28 @@ void nspc_batch_normalization_fwd_t::execute_forward() {
 
         for (int n = N_s; n < N_e; n++) {
             for (int sp = 0; sp < SP; sp++) {
-#pragma omp simd
+#if SAFE_TO_USE_OMP_SIMD
+                PRAGMA_OMP_SIMD()
+#endif
                 for (int c = 0; c < C; c++) {
                     data_t sqrt_variance = static_cast<data_t>(
-                            1. / sqrt(variance_loc[c] + eps));
+                            1.0f / sqrtf(variance_loc[c] + eps));
                     data_t sm = use_scaleshift ? scaleshift[c] : 1;
                     data_t sv = use_scaleshift ? scaleshift[C + c] : 0;
                     data_t bn_res
-                            = sm * (src[n * SP * C + sp * C + c] - mean_loc[c])
-                                    * sqrt_variance + sv;
-                    if (conf_.fuse_bn_relu()) {
+                            = sm * (src[(size_t)n * SP * C + sp * C + c]
+                                    - mean_loc[c]) * sqrt_variance + sv;
+                    if (fuse_bn_relu) {
                         if (bn_res <= 0) {
                             bn_res = 0;
-                            if (ws)
-                                ws[n * SP * C + sp * C + c] = 0;
+                            if (is_training)
+                                ws[(size_t)n * SP * C + sp * C + c] = 0;
                         } else {
-                            if (ws)
-                                ws[n * SP * C + sp * C + c] = 1;
+                            if (is_training)
+                                ws[(size_t)n * SP * C + sp * C + c] = 1;
                         }
                     }
-                    dst[n * SP * C + sp * C + c] = maybe_post_op(bn_res);
+                    dst[(size_t)n * SP * C + sp * C + c] = maybe_post_op(bn_res);
                 }
             }
         }
@@ -199,15 +212,15 @@ void nspc_batch_normalization_bwd_t::execute_backward() {
 
     const int N = conf_.MB();
     const int C = conf_.C();
-    int SP = conf_.H() * conf_.W();
+    int SP = conf_.D() * conf_.H() * conf_.W();
     int nthr = omp_get_max_threads();
     data_t *diff_gamma = diff_scaleshift, *diff_beta = diff_scaleshift + C;
     data_t *ws_reduce = this->stats_reduction_;
 
     const float eps = conf_.desc()->batch_norm_epsilon;
     const bool use_scaleshift = conf_.use_scaleshift();
-    ;
     const bool calculate_diff_stats = !conf_.omit_stats();
+    const bool fuse_bn_relu = conf_.fuse_bn_relu();
 #pragma omp parallel
     {
         int ithr = omp_get_thread_num();
@@ -226,11 +239,13 @@ void nspc_batch_normalization_bwd_t::execute_backward() {
 
         for (int n = N_s; n < N_e; n++)
             for (int sp = 0; sp < SP; sp++)
-#pragma omp simd
+#if SAFE_TO_USE_OMP_SIMD
+                PRAGMA_OMP_SIMD()
+#endif
                 for (int c = 0; c < C; c++) {
-                    const auto d_off = n * SP * C + sp * C + c;
+                    const size_t d_off = (size_t)n * SP * C + sp * C + c;
                     data_t dd;
-                    if (ws)
+                    if (fuse_bn_relu)
                         dd = (!ws[d_off]) ? 0 : diff_dst[d_off];
                     else
                         dd = diff_dst[d_off];
@@ -241,7 +256,7 @@ void nspc_batch_normalization_bwd_t::execute_backward() {
 #pragma omp barrier
         for (int c = C_s; c < C_e; c++) {
             data_t sqrt_variance
-                    = static_cast<data_t>(1. / sqrt(variance[c] + eps));
+                    = static_cast<data_t>(1.0f / sqrtf(variance[c] + eps));
             diff_gamma[c] = 0;
             diff_beta[c] = 0;
             for (int n = 0; n < nthr; n++) {
@@ -258,14 +273,16 @@ void nspc_batch_normalization_bwd_t::execute_backward() {
 
         for (int n = N_s; n < N_e; n++) {
             for (int sp = 0; sp < SP; sp++) {
-#pragma omp simd
+#if SAFE_TO_USE_OMP_SIMD
+                PRAGMA_OMP_SIMD()
+#endif
                 for (int c = 0; c < C; c++) {
-                    const auto d_off = n * SP * C + sp * C + c;
+                    const size_t d_off = (size_t)n * SP * C + sp * C + c;
                     data_t gamma = use_scaleshift ? scaleshift[c] : 1;
                     data_t sqrt_variance
-                            = static_cast<data_t>(1. / sqrt(variance[c] + eps));
+                            = static_cast<data_t>(1.0f / sqrtf(variance[c] + eps));
                     data_t v_diff_src;
-                    if (ws)
+                    if (fuse_bn_relu)
                         v_diff_src = (!ws[d_off]) ? 0 : diff_dst[d_off];
                     else
                         v_diff_src = diff_dst[d_off];

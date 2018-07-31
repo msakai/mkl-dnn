@@ -46,7 +46,7 @@ struct _jit_avx512_core_u8s8s32x_wino_convolution_fwd_t : public cpu_primitive_t
                 const typename pd_t::base_class *hint_fwd_pd)
             :  _cpu_convolution_fwd_pd_t<with_relu>(engine, adesc, attr,
             hint_fwd_pd)
-            , jcp_({})
+            , jcp_()
         {}
         DECLARE_COMMON_PD_T(
                 JIT_IMPL_NAME_HELPER("jit_int8_wino:", avx512_core, ""),
@@ -118,6 +118,8 @@ struct _jit_avx512_core_u8s8s32x_wino_convolution_fwd_t : public cpu_primitive_t
 
 private:
     void execute_forward();
+    void execute_forward_small_mb();
+    void execute_forward_mbN();
     pd_t conf_;
 
     jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t *kernel_;

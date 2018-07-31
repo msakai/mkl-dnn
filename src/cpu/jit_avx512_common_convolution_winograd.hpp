@@ -213,7 +213,7 @@ struct _jit_avx512_common_convolution_winograd_fwd_t
                 const typename pd_t::base_class *hint_fwd_pd)
             : _cpu_convolution_fwd_pd_t<with_relu>(engine, adesc, attr,
                     hint_fwd_pd)
-            , jcp_({}) {}
+            , jcp_() {}
 
         DECLARE_COMMON_PD_T(
                 JIT_IMPL_NAME_HELPER("jit_wino:", avx512_common, ""),
@@ -308,7 +308,7 @@ struct jit_avx512_common_convolution_winograd_bwd_data_t
                 const primitive_attr_t *attr,
                 const convolution_fwd_pd_t *hint_fwd_pd)
             : cpu_convolution_bwd_data_pd_t(engine, adesc, attr, hint_fwd_pd)
-            , jcp_({}) {}
+            , jcp_() {}
 
         DECLARE_COMMON_PD_T(
                 JIT_IMPL_NAME_HELPER("jit_wino:", avx512_common, ""),
@@ -400,7 +400,7 @@ struct jit_avx512_common_convolution_winograd_bwd_weights_t
                 const convolution_fwd_pd_t *hint_fwd_pd)
             : cpu_convolution_bwd_weights_pd_t(engine, adesc, attr,
                     hint_fwd_pd)
-            , jcp_({}) {}
+            , jcp_() {}
 
         DECLARE_COMMON_PD_T(
                 JIT_IMPL_NAME_HELPER("jit_wino:", avx512_common, ""),
@@ -452,17 +452,21 @@ struct jit_avx512_common_convolution_winograd_bwd_weights_t
         , conf_(*pd)
         , kernel_(nullptr)
         , scratchpad_(nullptr)
+        , padded_bias_(nullptr)
     {
         auto jcp = conf_.jcp_;
         kernel_ = new jit_avx512_common_conv_winograd_bwd_weights_kernel_f32(
                 jcp);
         scratchpad_ = new winograd::winograd_scratchpad_t(jcp);
+        if (conf_.want_padded_bias())
+            padded_bias_ = (float *)malloc(sizeof(float) * jcp.oc, 64);
     }
 
     ~jit_avx512_common_convolution_winograd_bwd_weights_t()
     {
         delete kernel_;
         delete scratchpad_;
+        free(padded_bias_);
     };
 
     typedef typename prec_traits<data_type::f32>::type data_t;
@@ -499,12 +503,15 @@ private:
     void _execute_backward_weights_S_D_Giot_W();
     void _execute_backward_weights_SDGtWo();
     void _execute_backward_weights_SDGt_W();
+    void _maybe_execute_diff_bias_copy();
 
     pd_t conf_;
     jit_avx512_common_conv_winograd_bwd_weights_kernel_f32 *kernel_;
 
     // Buffer required to store transforms in the frequency domain
     winograd::winograd_scratchpad_t *scratchpad_;
+
+    float *padded_bias_;
 };
 
 void trans_W_4x4_3x3(float Fw_[6][6][16][16], float F[3][3][16][16]);

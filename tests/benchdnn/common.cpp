@@ -278,7 +278,7 @@ bool maybe_skip(const char *skip_impl, const char *impl_str) {
     return false;
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__GNUC__)
 #include <windows.h>
 #define PATH_MAX MAX_PATH
 static char *dirname(char *path) {
@@ -363,4 +363,21 @@ int batch(const char *fname, bench_f bench) {
     fclose(fp);
 
     return OK;
+}
+
+int flip_coin(ptrdiff_t seed, float probability) {
+    const ptrdiff_t big_prime = 1000003;
+    const ptrdiff_t prime = 753737;
+    seed *= prime;
+    return (seed % big_prime) < (probability * big_prime);
+}
+
+int div_up(const int a, const int b){
+    SAFE_V(b != 0 ? OK : FAIL);
+    return (a + b - 1) / b;
+}
+
+void array_set(char *arr, size_t size) {
+    for (size_t i = 0; i < size; ++i)
+        arr[i] = 0;
 }

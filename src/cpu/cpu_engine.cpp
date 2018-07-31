@@ -47,6 +47,7 @@
 #include "cpu/jit_avx512_core_i8i8_pooling.hpp"
 #include "cpu/ref_pooling.hpp"
 #include "cpu/nchw_pooling.hpp"
+#include "cpu/nhwc_pooling.hpp"
 #include "cpu/jit_avx512_common_lrn.hpp"
 #include "cpu/jit_uni_lrn.hpp"
 #include "cpu/ref_lrn.hpp"
@@ -76,13 +77,12 @@ status_t cpu_engine_t::view_primitive_desc_create(view_pd_t **view_pd,
             const memory_pd_t *memory_pd, const dims_t dims,
             const dims_t offsets) {
     assert(memory_pd->engine() == this);
-    const memory_desc_wrapper mem_d(memory_pd);
-    if (mem_d.is_wino_desc())
-        return unimplemented;
-    auto mpd = (const cpu_memory_t::pd_t *)memory_pd;
-    /* FIXME: what if failed? */
-    return safe_ptr_assign<view_pd_t>(*view_pd,
-            new cpu_view_t::pd_t(this, mpd, dims, offsets));
+    cpu_view_t::pd_t *cpu_vpd = nullptr;
+    status_t status = cpu_view_t::pd_t::create(&cpu_vpd,
+            (const cpu_memory_t::pd_t *)memory_pd, dims, offsets);
+    if (status != success) return status;
+    *view_pd = cpu_vpd;
+    return success;
 }
 
 using pd_create_f = mkldnn::impl::engine_t::primitive_desc_create_f;
@@ -184,6 +184,7 @@ static const pd_create_f cpu_impl_list[] = {
     INSTANCE(ref_eltwise_bwd_t<s16>),
     /* softmax */
     INSTANCE(ref_softmax_fwd_t<f32>),
+    INSTANCE(ref_softmax_bwd_t<f32>),
     /* pool */
     INSTANCE(jit_uni_pooling_fwd_t<avx512_common>),
     INSTANCE(jit_uni_pooling_bwd_t<avx512_common>),
@@ -193,6 +194,8 @@ static const pd_create_f cpu_impl_list[] = {
     INSTANCE(jit_uni_pooling_bwd_t<sse42>),
     INSTANCE(nchw_pooling_fwd_t<f32>),
     INSTANCE(nchw_pooling_bwd_t<f32>),
+    INSTANCE(nhwc_pooling_fwd_t<f32>),
+    INSTANCE(nhwc_pooling_bwd_t<f32>),
     INSTANCE(ref_pooling_fwd_t<f32>),
     INSTANCE(ref_pooling_bwd_t<f32>),
     /* pool (int) */
@@ -217,6 +220,7 @@ static const pd_create_f cpu_impl_list[] = {
     INSTANCE(jit_uni_batch_normalization_fwd_t<avx2>),
     INSTANCE(jit_uni_batch_normalization_bwd_t<avx2>),
     INSTANCE(jit_uni_batch_normalization_fwd_t<sse42>),
+    INSTANCE(jit_uni_batch_normalization_bwd_t<sse42>),
     INSTANCE(ncsp_batch_normalization_fwd_t),
     INSTANCE(ncsp_batch_normalization_bwd_t),
     INSTANCE(nspc_batch_normalization_fwd_t),

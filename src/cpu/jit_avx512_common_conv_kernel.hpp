@@ -47,8 +47,9 @@ struct jit_avx512_common_conv_fwd_kernel : public jit_generator {
             cpu_memory_t::pd_t &dst_pd,
             cpu_memory_t::pd_t &bias_pd,
             const primitive_attr_t &attr,
-            bool with_relu = false,
-            float relu_negative_slope = 0.);
+            int nthreads,
+            bool with_relu,
+            float relu_negative_slope);
 
     jit_conv_conf_t jcp;
     const primitive_attr_t &attr_;
@@ -146,7 +147,7 @@ private:
             vpdpwssd(zmm1, zmm2, EVEX_compress_addr(reg, offset, true));
     }
 
-    inline void vadd(Xbyak::Zmm zmm, reg64_t reg, int offset)   {
+    inline void vadd(Xbyak::Zmm zmm, reg64_t reg, int offset) {
         if (jcp.ver == ver_4vnni || jcp.ver == ver_vnni)
             vpaddd(zmm, zmm, EVEX_compress_addr(reg, offset));
         else
@@ -179,7 +180,9 @@ private:
         int iw_str = !jcp.is_1stconv ? jcp.ic_block : 1;
         int ic_str = !jcp.is_1stconv ? 1 : jcp.iw * jcp.ih * jcp.id;
         return jcp.typesize_in
-            * ((ki + oi * jcp.stride_w - pad_l) * iw_str + scale * ic * ic_str);
+                * ((ki * (jcp.dilate_w + 1) + oi * jcp.stride_w - pad_l)
+                                  * iw_str
+                          + scale * ic * ic_str);
     }
 
     inline int get_kernel_offset(int ki,int ic,int n_oc_block,int ker_number) {
@@ -190,12 +193,15 @@ private:
     }
 
     inline int get_ow_start(int ki, int pad_l) {
-        return nstl::max(0, (pad_l - ki + jcp.stride_w - 1) / jcp.stride_w);
+        return nstl::max(0,
+                utils::div_up(pad_l - ki * (jcp.dilate_w + 1), jcp.stride_w));
     }
 
     inline int get_ow_end(int ur_w, int ki, int pad_r) {
-        return ur_w - nstl::max(0,
-            (ki + pad_r - (jcp.kw - 1) + jcp.stride_w - 1) / jcp.stride_w);
+        return ur_w - nstl::max(0, utils::div_up(pad_r
+                                                   - (jcp.kw - 1 - ki)
+                                                           * (jcp.dilate_w + 1),
+                                           jcp.stride_w));
     }
 };
 
@@ -295,27 +301,21 @@ private:
 
     inline int get_iw_start(int ki, int l_overflow)
     {
-        int r_pad = jcp.stride_w * (jcp.ow - 1) + jcp.kw - jcp.iw - jcp.l_pad;
-        int k_max = jcp.kw - 1 - (jcp.iw - 1 + r_pad) % jcp.stride_w
-            - l_overflow * jcp.stride_w;
-        int res = ki - k_max;
+        int res = (jcp.iw - 1 + jcp.r_pad) % jcp.stride_w
+                + l_overflow * jcp.stride_w
+                - (jcp.kw - 1 - ki) * (jcp.dilate_w + 1);
         while (res < 0)
             res += jcp.stride_w;
 
         return res;
-
     }
 
     inline int get_iw_end(int ur_w, int ki, int r_overflow)
     {
-        if (ur_w == jcp.ur_w_tail) {
-            int r_pad = nstl::min(0, jcp.stride_w * (jcp.ow - 1) + jcp.kw
-                    - jcp.iw - jcp.l_pad);
-            ur_w += r_pad;
-        }
-        int k_min = (ur_w - 1 + jcp.l_pad) % jcp.stride_w + r_overflow
-            * jcp.stride_w;
-        int res = k_min - ki;
+        if (ur_w == jcp.ur_w_tail)
+            ur_w += nstl::min(0, jcp.r_pad);
+        int res = (ur_w - 1 + jcp.l_pad) % jcp.stride_w
+                + r_overflow * jcp.stride_w - ki * (jcp.dilate_w + 1);
         while (res < 0)
             res += jcp.stride_w;
 
@@ -353,8 +353,8 @@ private:
     reg64_t reg_output = rsi;
     reg64_t b_ic = abi_not_param1;
     reg64_t kj = r8;
-    reg64_t reg_kh  = r9;
-    reg64_t reg_ur_w_trips  = r10;
+    reg64_t reg_kh = r9;
+    reg64_t reg_ur_w_trips = r10;
     reg64_t reg_oj = r15;
     reg64_t reg_ih_count = rbx;
     reg64_t reg_tmp = r14;
