@@ -41,7 +41,7 @@ struct jit_avx512_core_u8s8s32x_wino_conv_src_trans_t: public jit_generator {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(
             jit_avx512_core_u8s8s32x_wino_conv_src_trans_t)
 
-    jit_conv_conf_u8s8s32x_wino_t jcp;
+    jit_conv_conf_2x3_wino_t jcp;
     const primitive_attr_t &attr_;
 
     struct call_params_t {
@@ -53,7 +53,7 @@ struct jit_avx512_core_u8s8s32x_wino_conv_src_trans_t: public jit_generator {
     void (*ker_)(const call_params_t *);
 
     jit_avx512_core_u8s8s32x_wino_conv_src_trans_t(
-        jit_conv_conf_u8s8s32x_wino_t ajcp, const primitive_attr_t &attr)
+        jit_conv_conf_2x3_wino_t ajcp, const primitive_attr_t &attr)
         : jcp(ajcp), attr_(attr), unsign_val_in_wino_domain(5) {
         generate();
         ker_ = reinterpret_cast<decltype(ker_)>(const_cast<uint8_t*>(getCode()));
@@ -174,7 +174,7 @@ struct jit_avx512_core_u8s8s32x_wino_conv_dst_trans_t: public jit_generator {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(
             jit_avx512_core_u8s8s32x_wino_conv_dst_trans_t)
 
-    jit_conv_conf_u8s8s32x_wino_t jcp;
+    jit_conv_conf_2x3_wino_t jcp;
     const primitive_attr_t &attr_;
 
     struct call_params_t {
@@ -189,7 +189,7 @@ struct jit_avx512_core_u8s8s32x_wino_conv_dst_trans_t: public jit_generator {
     void (*ker_)(const call_params_t *);
 
     jit_avx512_core_u8s8s32x_wino_conv_dst_trans_t(
-        jit_conv_conf_u8s8s32x_wino_t ajcp, const primitive_attr_t &attr)
+        jit_conv_conf_2x3_wino_t ajcp, const primitive_attr_t &attr)
         : jcp(ajcp), attr_(attr) {
         generate();
         ker_ = reinterpret_cast<decltype(ker_)>(const_cast<uint8_t*>(getCode()));
@@ -428,7 +428,7 @@ void jit_avx512_core_u8s8s32x_wino_conv_dst_trans_t::generate() {
 /// GEMM kernel ////////////////////////////////////////////////////////////////
 struct jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t: public jit_generator {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t)
-    jit_conv_conf_u8s8s32x_wino_t jcp;
+    jit_conv_conf_2x3_wino_t jcp;
     const primitive_attr_t &attr_;
 
     struct call_params_t {
@@ -440,11 +440,11 @@ struct jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t: public jit_generator {
     void (*ker_)(const call_params_t *);
 
     void generate();
-    static bool post_ops_ok(jit_conv_conf_u8s8s32x_wino_t &jcp,
+    static bool post_ops_ok(jit_conv_conf_2x3_wino_t &jcp,
                             const primitive_attr_t &attr);
 
     jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t(
-        jit_conv_conf_u8s8s32x_wino_t ajcp, const primitive_attr_t &attr)
+        jit_conv_conf_2x3_wino_t ajcp, const primitive_attr_t &attr)
         : jcp(ajcp), attr_(attr)
     {
         generate();
@@ -452,12 +452,11 @@ struct jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t: public jit_generator {
     }
 
     static status_t init_conf(
-            jit_conv_conf_u8s8s32x_wino_t &jcp, const convolution_desc_t &cd,
+            jit_conv_conf_2x3_wino_t &jcp, const convolution_desc_t &cd,
             cpu_memory_t::pd_t &src_pd, cpu_memory_t::pd_t &weights_pd,
             cpu_memory_t::pd_t &dst_pd, cpu_memory_t::pd_t &bias_pd,
             const primitive_attr_t &attr,
-            bool with_relu, float relu_negative_slope,
-            memory_desc_t& expect_wei_md);
+            bool with_relu, float relu_negative_slope);
 
     Zmm vreg_out(int n, int m) {
         const int id_reg_out = n * jcp.m_block + m;
@@ -489,7 +488,7 @@ struct jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t: public jit_generator {
 
 };
 bool jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t::post_ops_ok(
-        jit_conv_conf_u8s8s32x_wino_t &jcp, const primitive_attr_t &attr) {
+        jit_conv_conf_2x3_wino_t &jcp, const primitive_attr_t &attr) {
     using namespace primitive_kind;
     const auto &p = attr.post_ops_;
 
@@ -612,12 +611,11 @@ void jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t::generate() {
     postamble();
 }
 status_t jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t
-::init_conf(jit_conv_conf_u8s8s32x_wino_t &jcp,
+::init_conf(jit_conv_conf_2x3_wino_t &jcp,
             const convolution_desc_t &cd, cpu_memory_t::pd_t &src_pd,
             cpu_memory_t::pd_t &wei_pd, cpu_memory_t::pd_t &dst_pd,
             cpu_memory_t::pd_t &bias_pd, const primitive_attr_t &attr,
-            bool with_relu, float relu_negative_slope,
-            memory_desc_t& expect_wei_md) {
+            bool with_relu, float relu_negative_slope) {
     const memory_desc_wrapper src_d(&src_pd);
     const memory_desc_wrapper wei_d(&wei_pd);
     const memory_desc_wrapper dst_d(&dst_pd);
@@ -755,22 +753,31 @@ status_t jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t
 
     /* re-create weights primitive descriptor
                                     and set weights wino_blocking */
+    memory_desc_t expect_wei_md = *(wei_pd.desc());
+
     expect_wei_md.format = mkldnn_wino_fmt;
     expect_wei_md.data_type = data_type::s8;
     mkldnn_wino_desc_t &wd = expect_wei_md.layout_desc.wino_desc;
     wd.wino_format = mkldnn_wino_wei_aaOIoi;
-    wd.m = jcp.m;
     wd.r = jcp.r;
     wd.alpha = jcp.alpha;
-    wd.nb_ic = jcp.nb_ic;
-    wd.nb_oc = jcp.nb_oc;
+    wd.ic = jcp.ic;
+    wd.oc = jcp.oc;
     wd.ic_block = jcp.ic_block;
     wd.oc_block = jcp.oc_block;
+    wd.oc2_block = jcp.n2_block;
+    wd.ic2_block = 1;
     size_t max_size = types::data_type_size(data_type::s8) *
                         jcp.alpha * jcp.alpha * jcp.ic * jcp.oc;
     max_size += types::data_type_size(data_type::s32) *
                                 jcp.alpha * jcp.alpha * jcp.oc;
     wd.size = max_size;
+
+    cpu_memory_t::pd_t new_weights_pd(wei_pd.engine(), &expect_wei_md);
+    if (wei_pd.desc()->format == any)
+        wei_pd = new_weights_pd;
+    if (!wei_pd.is_equal(&new_weights_pd))
+        return status::unimplemented;
 
     return status::success;
 }
@@ -778,11 +785,11 @@ status_t jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t
 
 template <bool with_relu, data_type_t dst_data_type>
 status_t _jit_avx512_core_u8s8s32x_wino_convolution_fwd_t<with_relu,
-        dst_data_type>::pd_t::jit_conf(memory_desc_t& expect_wei_md) {
+        dst_data_type>::pd_t::jit_conf() {
     return jit_avx512_core_u8s8s32x_wino_conv_fwd_ker_t::init_conf(
             jcp_, this->cdesc_(), this->src_pd_, this->weights_pd_,
             this->dst_pd_,this->bias_pd_, *this->attr(),
-            with_relu, this->negative_slope(), expect_wei_md);
+            with_relu, this->negative_slope());
 }
 
 template <bool with_relu, data_type_t dst_data_type>

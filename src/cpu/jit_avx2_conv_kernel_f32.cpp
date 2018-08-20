@@ -329,20 +329,26 @@ void jit_avx2_conv_fwd_kernel_f32::generate()
     const char *tail_label = ".tail";
     const char *exit_label = ".exit";
 
-    cmp(reg_oc_blocks, jcp.nb_oc_blocking);
-    jne(nb_oc_tail ? tail_label : exit_label, T_NEAR);
+    if (jcp.nb_oc > jcp.nb_oc_blocking) {
+        cmp(reg_oc_blocks, jcp.nb_oc_blocking);
+        jne(nb_oc_tail ? tail_label : exit_label, T_NEAR);
 
-    solve_common(jcp.nb_oc_blocking, '0' + jcp.nb_oc_blocking);
-    jmp(exit_label, T_NEAR);
+        solve_common(jcp.nb_oc_blocking, '0' + jcp.nb_oc_blocking);
+        jmp(exit_label, T_NEAR);
 
-    if (nb_oc_tail) {
-        L(tail_label);
-        cmp(reg_oc_blocks, nb_oc_tail);
-        jne(exit_label, T_NEAR);
+        if (nb_oc_tail) {
+            L(tail_label);
+            cmp(reg_oc_blocks, nb_oc_tail);
+            jne(exit_label, T_NEAR);
+            solve_common(nb_oc_tail, '0' + nb_oc_tail);
+        }
+
+        L(exit_label);
+    } else if (jcp.nb_oc == jcp.nb_oc_blocking) {
+        solve_common(jcp.nb_oc_blocking, '0' + jcp.nb_oc_blocking);
+    } else {
         solve_common(nb_oc_tail, '0' + nb_oc_tail);
     }
-
-    L(exit_label);
 
     this->postamble();
 }
@@ -417,7 +423,8 @@ status_t jit_avx2_conv_fwd_kernel_f32::init_conf(jit_conv_conf_t &jcp,
         jcp.relu_negative_slope = 0.f;
     }
 
-    const bool flat = jcp.ic == 3;
+    const int simd_w = 8;
+    const bool flat = jcp.ic < simd_w;
     const bool mimo = !flat;
 
     bool args_ok = true
@@ -428,8 +435,6 @@ status_t jit_avx2_conv_fwd_kernel_f32::init_conf(jit_conv_conf_t &jcp,
         && one_of(cd.bias_desc.format, memory_format::undef, any, x)
         && dst_d.format() == nChw8c;
     if (!args_ok) return status::unimplemented;
-
-    const int simd_w = 8;
 
     jcp.ur_h = 1; /* no code-unrolling by h so far */
     jcp.ur_w = 3;

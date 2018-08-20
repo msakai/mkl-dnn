@@ -22,8 +22,6 @@
 #include "type_helpers.hpp"
 #include "mkldnn_thread.hpp"
 
-#include "os_blas.hpp"
-
 namespace mkldnn {
 namespace impl {
 namespace cpu {
@@ -32,8 +30,8 @@ using namespace mkldnn::impl::status;
 using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::utils;
 
-template <bool with_relu, bool run_jit, cpu_isa_t isa>
-void _gemm_convolution_fwd_t<with_relu, run_jit, isa>::execute_forward() {
+template <bool with_relu>
+void _gemm_convolution_fwd_t<with_relu>::execute_forward() {
     auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
     auto weights = reinterpret_cast<const data_t *>(this->input_memory(1));
     auto bias = reinterpret_cast<const data_t *>(this->input_memory(2));
@@ -49,7 +47,7 @@ void _gemm_convolution_fwd_t<with_relu, run_jit, isa>::execute_forward() {
     const int K = jcp.ic * jcp.ks;
     const int N = jcp.oc;
     const int m = jcp.os;
-    const int LDA = jcp.need_im2col ? m : M;
+    const int LDA = jcp.im2col_sz ? m : M;
 
     const auto &post_ops = conf_.attr()->post_ops_;
 
@@ -67,13 +65,20 @@ void _gemm_convolution_fwd_t<with_relu, run_jit, isa>::execute_forward() {
 
     const data_t one = 1.0;
 
+    data_t *col = (jcp.im2col_sz)
+        ? (data_t *)this->scratchpad_->get()
+        : nullptr;
+
     const size_t work_amount = jcp.ngroups * jcp.mb * jcp.od;
-#   pragma omp parallel num_threads(this->nthr_)
+#   pragma omp parallel num_threads(jcp.nthr)
     {
         const int ithr = omp_get_thread_num();
         const int nthr = omp_get_num_threads();
 
-        data_t *_col = this->col_ + (size_t)ithr * jcp.ic * jcp.ks * jcp.os;
+        data_t *_col = col + (ptrdiff_t)ithr * jcp.im2col_sz;
+
+        # pragma omp parallel for if(jcp.nthr == 1)
+        for (ptrdiff_t i = 0; i < jcp.im2col_sz; ++i) _col[i] = (data_t)0;
 
         int g{0}, n{0}, od{0};
         size_t start = 0, end = 0;
@@ -86,23 +91,16 @@ void _gemm_convolution_fwd_t<with_relu, run_jit, isa>::execute_forward() {
             const data_t *_weights = weights + g * weights_g_size;
             data_t *_dst = dst + (n * jcp.ngroups + g) * dst_step;
 
-            if (jcp.need_im2col)
-            {
+            if (jcp.im2col_sz) {
                 if (jcp.id == 1)
                     jit_gemm_convolution_utils::im2col(jcp, _src, _col);
                 else
                     jit_gemm_convolution_utils::im2col_3d(jcp, _src, _col, od);
             }
 
-            if (run_jit) {
-                sgemm_->sgemm("N", "N", &m, &N, &K, &one,
-                    jcp.need_im2col ? _col : _src + od * m, &LDA, _weights, &K,
+            extended_sgemm("N", "N", &m, &N, &K, &one,
+                    jcp.im2col_sz ? _col : _src + od * m, &LDA, _weights, &K,
                     &this->beta_, _dst + od * m, &M);
-            } else {
-                cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, m, N,
-                    K, one, jcp.need_im2col ? _col : _src + od * m, LDA,
-                    _weights, K, this->beta_, _dst + od * m, M);
-            }
 
             if (jcp.with_bias || do_relu) {
                 data_t *d = _dst + od * m, b = 0.0;
@@ -121,8 +119,7 @@ void _gemm_convolution_fwd_t<with_relu, run_jit, isa>::execute_forward() {
     }
 }
 
-template <bool run_jit, cpu_isa_t isa>
-void _gemm_convolution_bwd_data_t<run_jit, isa>::execute_backward_data() {
+void gemm_convolution_bwd_data_t::execute_backward_data() {
     auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(0));
     auto weights = reinterpret_cast<const data_t *>(this->input_memory(1));
     auto diff_src = reinterpret_cast<data_t*>(this->memory());
@@ -137,16 +134,23 @@ void _gemm_convolution_bwd_data_t<run_jit, isa>::execute_backward_data() {
     const int m = jcp.os;
     const int K = jcp.oc;
     const int N = jcp.ic * jcp.ks;
-    const int LDC = jcp.need_im2col ? m : M;
+    const int LDC = jcp.im2col_sz ? m : M;
     const data_t zero = 0.0, one = 1.0;
 
-    const size_t work_amount = jcp.ngroups * jcp.mb;
-#pragma omp parallel num_threads(this->nthr_)
+    data_t *col = (jcp.im2col_sz)
+        ? (data_t *)this->scratchpad_->get()
+        : nullptr;
+
+    const size_t work_amount = (size_t)jcp.ngroups * jcp.mb;
+#pragma omp parallel num_threads(jcp.nthr)
     {
         const int ithr = omp_get_thread_num();
         const int nthr = omp_get_num_threads();
 
-        data_t *_col = this->col_ + (size_t)ithr * jcp.ic * jcp.ks * jcp.os;
+        data_t *_col = col + (ptrdiff_t)ithr * jcp.im2col_sz;
+
+        # pragma omp parallel for if(jcp.nthr == 1)
+        for (ptrdiff_t i = 0; i < jcp.im2col_sz; ++i) _col[i] = (data_t)0;
 
         if (jcp.id > 1) {
             ptrdiff_t diff_src_sz = (ptrdiff_t)(work_amount * src_step);
@@ -167,18 +171,11 @@ void _gemm_convolution_bwd_data_t<run_jit, isa>::execute_backward_data() {
                 const data_t *_diff_dst = diff_dst + (n * jcp.ngroups + g)
                     *dst_step + od * m;
 
-                if (run_jit) {
-                    sgemm_->sgemm("N", "T", &m, &N, &K, &one, _diff_dst, &M,
+                extended_sgemm("N", "T", &m, &N, &K, &one, _diff_dst, &M,
                     _weights, &N, &zero,
-                    jcp.need_im2col ? _col:_diff_src + od * m, &LDC);
-                } else {
-                    cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans, m, N,
-                    K, one, _diff_dst, M, _weights, N, zero,
-                    jcp.need_im2col ? _col : _diff_src + od * m, LDC);
-                }
+                    jcp.im2col_sz ? _col:_diff_src + od * m, &LDC);
 
-                if (jcp.need_im2col)
-                {
+                if (jcp.im2col_sz) {
                     if (jcp.id == 1)
                         jit_gemm_convolution_utils::col2im(jcp, _col,
                             _diff_src);
@@ -192,8 +189,7 @@ void _gemm_convolution_bwd_data_t<run_jit, isa>::execute_backward_data() {
     }
 }
 
-template <bool run_jit, cpu_isa_t isa>
-void _gemm_convolution_bwd_weights_t<run_jit, isa>::execute_backward_weights() {
+void gemm_convolution_bwd_weights_t::execute_backward_weights() {
     auto src = reinterpret_cast<const data_t *>(this->input_memory(0));
     auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(1));
     auto diff_weights = reinterpret_cast<data_t*>(this->memory(0));
@@ -208,9 +204,19 @@ void _gemm_convolution_bwd_weights_t<run_jit, isa>::execute_backward_weights() {
     const int k = jcp.os;
     const int N = jcp.oc;
     const int M = jcp.ic * jcp.ks;
-    const int LDA = jcp.need_im2col ? k : K;
+    const int LDA = jcp.im2col_sz ? k : K;
     const data_t zero = 0.0, one = 1.0;
-#pragma omp parallel num_threads(this->nthr_)
+
+    data_t *col = nullptr, *wei_reduction = nullptr;
+    ptrdiff_t wei_offset = 0;
+    if (jcp.im2col_sz) {
+        col = (data_t *)this->scratchpad_->get();
+        wei_offset = jcp.im2col_sz * jcp.nthr;
+    }
+    if (jcp.need_wei_reduction)
+        wei_reduction = (data_t *)this->scratchpad_->get() + wei_offset;
+
+#pragma omp parallel num_threads(jcp.nthr)
     {
         const int ithr = omp_get_thread_num();
         const int nthr = omp_get_num_threads();
@@ -229,11 +235,15 @@ void _gemm_convolution_bwd_weights_t<run_jit, isa>::execute_backward_weights() {
 
             assert(implication((g_end - g_start) > 1, need_reduction == 0));
 
-            data_t *_col = this->col_ + (size_t)ithr * jcp.ic * jcp.ks * jcp.os;
-            data_t *weights_reduce_base = this->wei_reduction_
+            data_t *_col = col + (ptrdiff_t)ithr * jcp.im2col_sz;
+            data_t *weights_reduce_base = wei_reduction
                     + ithr_g * nthr_mb * weights_g_size;
             data_t *weights_reduce = weights_reduce_base
                     + ithr_mb * weights_g_size;
+
+            # pragma omp parallel for if(jcp.nthr == 1)
+            for (ptrdiff_t i = 0; i < jcp.im2col_sz; ++i) _col[i] = (data_t)0;
+
             for (size_t g = g_start; g < g_end; ++g) {
                 data_t *_diff_weights = need_reduction
                         ? weights_reduce : (diff_weights + g * weights_g_size);
@@ -243,27 +253,20 @@ void _gemm_convolution_bwd_weights_t<run_jit, isa>::execute_backward_weights() {
                     const data_t *_diff_dst = diff_dst
                             + (mb*jcp.ngroups+g)*dst_step + od * k;
 
-                    if (jcp.need_im2col)
-                    {
+                    if (jcp.im2col_sz) {
                         if (jcp.id == 1)
                             jit_gemm_convolution_utils::im2col(jcp, _src, _col);
                         else
                             jit_gemm_convolution_utils::im2col_3d(jcp, _src,
                                 _col, od);
                     }
-                    if (run_jit) {
-                        (mb == mb_start && od == 0 ? sgemm_0 :sgemm_1)->sgemm(
-                            "T", "N", &M, &N, &k, &one,
-                            jcp.need_im2col ? _col : _src + od * k,
-                            &LDA, _diff_dst, &K,
-                            mb == mb_start && od == 0 ? &zero : &one,
-                            _diff_weights, &M);
-                    } else {
-                        cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans, M,
-                        N, k, one, jcp.need_im2col ? _col : _src + od * k, LDA,
-                        _diff_dst, K, mb == mb_start && od == 0 ? zero : one,
-                        _diff_weights, M);
-                    }
+
+                    extended_sgemm(
+                        "T", "N", &M, &N, &k, &one,
+                        jcp.im2col_sz ? _col : _src + od * k,
+                        &LDA, _diff_dst, &K,
+                        mb == mb_start && od == 0 ? &zero : &one,
+                        _diff_weights, &M);
                     }
                 }
             }
@@ -290,10 +293,10 @@ void _gemm_convolution_bwd_weights_t<run_jit, isa>::execute_backward_weights() {
             nd_iterator_init(start, g, jcp.ngroups, oc, jcp.oc);
             for (size_t iwork = start; iwork < end; ++iwork) {
                 data_t db = 0;
-                size_t offset_ = g*dst_step + oc * K;
+                size_t offset_ = (size_t)g*dst_step + (size_t)oc * K;
                 for (int mb = 0; mb < jcp.mb; ++mb)
                 {
-                    size_t offset = offset_ + mb*jcp.ngroups*dst_step;
+                    size_t offset = offset_ + (size_t)mb*jcp.ngroups*dst_step;
                     for (int od = 0; od < jcp.od; ++od)
                     for (int oh = 0; oh < jcp.oh; ++oh)
                     PRAGMA_OMP_SIMD(reduction(+:db))
@@ -310,21 +313,8 @@ void _gemm_convolution_bwd_weights_t<run_jit, isa>::execute_backward_weights() {
     }
 }
 
-template struct _gemm_convolution_fwd_t<true, true, avx512_common>;
-template struct _gemm_convolution_fwd_t<true, true, avx2>;
-template struct _gemm_convolution_fwd_t<false, true, avx512_common>;
-template struct _gemm_convolution_fwd_t<false, true, avx2>;
-template struct _gemm_convolution_fwd_t<true, false, isa_any>;
-template struct _gemm_convolution_fwd_t<false, false, isa_any>;
-
-template struct _gemm_convolution_bwd_data_t<true, avx512_common>;
-template struct _gemm_convolution_bwd_data_t<true, avx2>;
-template struct _gemm_convolution_bwd_data_t<false, isa_any>;
-
-template struct _gemm_convolution_bwd_weights_t<true, avx512_common>;
-template struct _gemm_convolution_bwd_weights_t<true, avx2>;
-template struct _gemm_convolution_bwd_weights_t<false, isa_any>;
-
+template struct _gemm_convolution_fwd_t<true>;
+template struct _gemm_convolution_fwd_t<false>;
 }
 }
 }

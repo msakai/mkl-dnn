@@ -46,7 +46,7 @@ struct jit_conv_conf_t {
 
     int ndims;
     int mb;
-    int ngroups, ic, oc, oc_without_padding;
+    int ngroups, ic, oc, oc_without_padding, ic_without_padding;
     int id, ih, iw, od, oh, ow;
     int f_pad, l_pad, t_pad;
     int back_pad, r_pad, b_pad;
@@ -101,7 +101,7 @@ struct jit_conv_conf_t {
     int aligned_threads;
 };
 
-struct jit_conv_conf_u8s8s32x_wino_t {
+struct jit_conv_conf_2x3_wino_t {
     conv_version_t ver;
 
     int m;
@@ -273,7 +273,7 @@ struct jit_1x1_conv_conf_t {
     conv_version_t ver;
 
     int mb;
-    int ngroups, ic, oc, oc_without_padding;
+    int ngroups, ic, oc, oc_without_padding, ic_without_padding;
     int iw, ih, ow, oh;
     int l_pad, t_pad;
     int kh, kw;
@@ -335,7 +335,10 @@ struct jit_gemm_conv_conf_t {
 
     int is, os, ks;
     int ic_block, oc_block;
-    bool need_im2col;
+
+    int nthr;
+    ptrdiff_t im2col_sz;
+    bool need_wei_reduction;
 };
 
 struct jit_1x1_conv_call_s {
@@ -352,7 +355,7 @@ struct jit_1x1_conv_call_s {
 
     size_t output_stride; // used in backward_weights only
 
-    size_t reduce_pos_flag;
+    size_t first_last_flag;
 };
 
 /* pooling */

@@ -342,16 +342,13 @@ void _jit_avx512_common_conv_winograd_data_kernel_f32::gemm_loop_generate(
     };
 
     /* Preamble */
-    // register used to handle long fma encoding
-    push(reg_EVEX_max_8b_offt);
-    mov(reg_EVEX_max_8b_offt, 2 * EVEX_max_8b_offt);
+    preamble();
 
     /* kernel */
     inner_loops();
 
     /* Postamble */
-    pop(reg_EVEX_max_8b_offt);
-    uni_vzeroupper();
+    postamble();
     ret();
 }
 
@@ -741,13 +738,15 @@ void jit_avx512_common_conv_winograd_bwd_weights_kernel_f32::transpose_ker_gener
         }
     };
 
+    preamble();
     int curr = 0;
     for (int j = 0; j < alpha; j++) {
         for (int i = 0; i < alpha; i++) {
             int origB_offset = (j * alpha + i) * jcp.dimK_4fma;
-            int transB_offset = (j * alpha + i) * jcp.dimK_nb_block *
+            size_t transB_offset = (size_t)(j * alpha + i) * jcp.dimK_nb_block *
                 jcp.dimN_block * jcp.dimK_block * jcp.dimK_reg_block *
-                jcp.dimK_4fma * jcp.dimN_reg_block;
+                jcp.dimK_4fma * jcp.dimN_reg_block * sizeof(float);
+            mov(reg_transB_idx, transB_offset);
             for (int tb = 0; tb < jcp.dimK_4fma; tb+=4) {
                 /*double buffering to hide load latencies*/
                 int next = (curr + 4) % 8;
@@ -771,24 +770,24 @@ void jit_avx512_common_conv_winograd_bwd_weights_kernel_f32::transpose_ker_gener
                 vunpcklpd(Zmm(8), Zmm(curr), Zmm(curr + 1));
                 vunpckhpd(Zmm(9), Zmm(curr), Zmm(curr + 1));
 
-                vmovntps(zword[reg_transB
-                        + sizeof(float) * (transB_offset + tb * jcp.dimN_reg_block)],
+                vmovntps(zword[reg_transB + reg_transB_idx
+                        + sizeof(float) * tb * jcp.dimN_reg_block],
                         Zmm(curr+2));
-                vmovntps(zword[reg_transB
-                        + sizeof(float) * (transB_offset + (tb + 1) * jcp.dimN_reg_block)],
+                vmovntps(zword[reg_transB + reg_transB_idx
+                        + sizeof(float) * (tb + 1) * jcp.dimN_reg_block],
                         Zmm(curr+3));
-                vmovntps(zword[reg_transB
-                        + sizeof(float) * (transB_offset + (tb + 2) * jcp.dimN_reg_block)],
+                vmovntps(zword[reg_transB + reg_transB_idx
+                        + sizeof(float) * (tb + 2) * jcp.dimN_reg_block],
                         Zmm(8));
-                vmovntps(zword[reg_transB
-                        + sizeof(float) * (transB_offset + (tb + 3) * jcp.dimN_reg_block)],
+                vmovntps(zword[reg_transB + reg_transB_idx
+                        + sizeof(float) * (tb + 3) * jcp.dimN_reg_block],
                         Zmm(9));
                 curr = next;
 
             }
         }
     }
-    uni_vzeroupper();
+    postamble();
     ret();
 }
 void jit_avx512_common_conv_winograd_bwd_weights_kernel_f32::gemm_loop_generate(
@@ -955,16 +954,12 @@ void jit_avx512_common_conv_winograd_bwd_weights_kernel_f32::gemm_loop_generate(
 
     /* Preamble */
     // register used to handle long fma encoding
-    push(reg_EVEX_max_8b_offt);
-    push(reg_dimK_block_loop_cnt);
-    mov(reg_EVEX_max_8b_offt, 2 * EVEX_max_8b_offt);
+    preamble();
     mov(reg_srcA, reg_srcA_const);
     inner_loops();
 
     /* Postamble */
-    pop(reg_dimK_block_loop_cnt);
-    pop(reg_EVEX_max_8b_offt);
-    uni_vzeroupper();
+    postamble();
     ret();
 }
 

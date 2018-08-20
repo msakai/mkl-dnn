@@ -48,6 +48,10 @@ template <> inline int8_t saturate<int8_t, uint8_t>(const uint8_t &x) {
     return x <= 127u ? x : 127;
 }
 
+template <> inline uint8_t saturate<uint8_t, int8_t>(const int8_t &x) {
+    return x >= 0 ? x : 0;
+}
+
 template <typename out_t>
 inline typename utils::enable_if<nstl::is_integral<out_t>::value, out_t>::type
 out_round(float v, round_mode_t rmode = round_mode::nearest)
@@ -59,16 +63,16 @@ out_round(float v, round_mode_t rmode = round_mode::nearest)
 { UNUSED(rmode); return v; }
 
 inline int gcd(int a, int b) {
-	a = impl::nstl::abs(a);
-	b = impl::nstl::abs(b);
-	if (a < b) { int x = a; a = b; b = x; }
+    a = impl::nstl::abs(a);
+    b = impl::nstl::abs(b);
+    if (a < b) { int x = a; a = b; b = x; }
 
-	if (b == 0) return a;
+    if (b == 0) return a;
 
-	int r;
-	while ((r = a % b) != 0) { a = b; b = r; }
+    int r;
+    while ((r = a % b) != 0) { a = b; b = r; }
 
-	return b;
+    return b;
 }
 
 template <typename T>

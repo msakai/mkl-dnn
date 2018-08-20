@@ -26,7 +26,7 @@
 #include "utils.hpp"
 
 #include "jit_avx512_common_convolution_winograd.hpp"
-#include "jit_avx512_core_convolution_winograd.hpp"
+#include "jit_avx512_core_fp32_wino_conv_4x3.hpp"
 
 #ifndef _MSC_VER
 #define pragma_unroll _Pragma("unroll")
@@ -44,7 +44,7 @@ using namespace mkldnn::impl::memory_format;
 using namespace mkldnn::impl::utils;
 
 template <bool is_fwd>
-void _jit_avx512_core_convolution_winograd_t<is_fwd>
+void _jit_avx512_core_fp32_wino_conv_4x3_t<is_fwd>
 ::weight_transform_data(const jit_conv_winograd_conf_t &jcp,
         float *wp, float *twp)
 {
@@ -68,7 +68,7 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>
 }
 
 template<bool is_fwd>
-void _jit_avx512_core_convolution_winograd_t<is_fwd>::output_transform_data
+void _jit_avx512_core_fp32_wino_conv_4x3_t<is_fwd>::output_transform_data
 (int image, const jit_conv_winograd_conf_t &jcp,
     const post_ops_t &p_ops, float *toutp, float *pout_b, float *bias) {
 
@@ -118,7 +118,7 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::output_transform_data
 }
 
 template<bool is_fwd>
-void _jit_avx512_core_convolution_winograd_t<is_fwd>
+void _jit_avx512_core_fp32_wino_conv_4x3_t<is_fwd>
 ::output_transform_tileblock_data(int tile_block,
     const jit_conv_winograd_conf_t &jcp, const post_ops_t &p_ops,
     float *toutp, float *outp, float *bias) {
@@ -169,7 +169,7 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>
 
 
 template<bool is_fwd>
-void _jit_avx512_core_convolution_winograd_t<is_fwd>
+void _jit_avx512_core_fp32_wino_conv_4x3_t<is_fwd>
     ::input_transform_data(int image, const jit_conv_winograd_conf_t &jcp,
         float *inp, float *tinp)
 {
@@ -221,7 +221,7 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>
 }
 
 template <bool is_fwd>
-void _jit_avx512_core_convolution_winograd_t<is_fwd>
+void _jit_avx512_core_fp32_wino_conv_4x3_t<is_fwd>
     ::input_transform_tileblock_data(int tile_block,
         const jit_conv_winograd_conf_t &jcp,
         float *inp, float *tinp)
@@ -279,7 +279,7 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>
 }
 
 template <bool is_fwd>
-void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
+void _jit_avx512_core_fp32_wino_conv_4x3_t<is_fwd>::_execute_data_W_S_G_D(
         float *inp_ptr, float *out_ptr, float *wei_ptr, float *bias_ptr) {
     const auto &jcp = kernel_->jcp;
     const auto &p_ops = attr_->post_ops_;
@@ -314,7 +314,12 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
             alpha, alpha,
             jcp.dimN_block, jcp.dimM_block * jcp.dimM_reg_block,
             jcp.dimN_reg_block, jcp.dimM_simd_block);
-    array_offset_calculator<float, 8> U((float *)((this->scratchpad_)->U_ptr()),
+
+    auto wino_wei = (jcp.prop_kind == prop_kind::forward_inference)
+            ? wei_ptr
+            : (float *)(this->scratchpad_)->U_ptr();
+
+    array_offset_calculator<float, 8> U(wino_wei,
             jcp.dimM_nb_block,
             alpha, alpha,
             jcp.dimK_nb_block,
@@ -352,25 +357,20 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
             }
         }
 
+        if (jcp.prop_kind != prop_kind::forward_inference) {
 #pragma omp for nowait collapse(4) schedule(static)
-        for (int ofm1 = 0; ofm1 < jcp.nb_oc; ofm1++){
-            for (int ifm1 = 0; ifm1 < jcp.nb_ic; ifm1++){
-                for (int ofm2 = 0; ofm2 < jcp.oc_block * jcp.oc_reg_block;
-                     ofm2++){
-                    for (int ifm2 = 0; ifm2 < jcp.ic_block * jcp.ic_reg_block;
-                         ifm2++){
-                        float *U_base_ptr = is_fwd
-                        ? &(U(ofm1, 0, 0, ifm1, ofm2, ifm2, 0, 0))
-                        : &(U(ifm1, 0, 0, ofm1, ifm2, ofm2, 0, 0));
-                        weight_transform_data(jcp,
-                            &(weights(
-                                ofm1 * jcp.oc_block * jcp.oc_reg_block + ofm2,
-                                ifm1 * jcp.ic_block * jcp.ic_reg_block + ifm2,
-                                0, 0, 0, 0)),
-                            U_base_ptr);
-                    }
-                }
-            }
+            for (int ofm1 = 0; ofm1 < jcp.nb_oc; ofm1++) {
+            for (int ifm1 = 0; ifm1 < jcp.nb_ic; ifm1++) {
+            for (int ofm2 = 0; ofm2 < jcp.oc_block * jcp.oc_reg_block; ofm2++) {
+            for (int ifm2 = 0; ifm2 < jcp.ic_block * jcp.ic_reg_block; ifm2++) {
+                float *U_base_ptr = is_fwd
+                    ? &(U(ofm1, 0, 0, ifm1, ofm2, ifm2, 0, 0))
+                    : &(U(ifm1, 0, 0, ofm1, ifm2, ofm2, 0, 0));
+                weight_transform_data(jcp,
+                    &(weights(ofm1 * jcp.oc_block * jcp.oc_reg_block + ofm2,
+                              ifm1 * jcp.ic_block * jcp.ic_reg_block + ifm2,
+                              0, 0, 0, 0)), U_base_ptr);
+            }}}}
         }
 
 #pragma omp barrier
@@ -420,14 +420,14 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_S_G_D(
 }
 
 template void
-_jit_avx512_core_convolution_winograd_t<true>::_execute_data_W_S_G_D(
+_jit_avx512_core_fp32_wino_conv_4x3_t<true>::_execute_data_W_S_G_D(
         float *, float *, float *, float *);
 template void
-_jit_avx512_core_convolution_winograd_t<false>::_execute_data_W_S_G_D(
+_jit_avx512_core_fp32_wino_conv_4x3_t<false>::_execute_data_W_S_G_D(
         float *, float *, float *, float *);
 
 template <bool is_fwd>
-void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_SGD(
+void _jit_avx512_core_fp32_wino_conv_4x3_t<is_fwd>::_execute_data_W_SGD(
         float *inp_ptr, float *out_ptr, float *wei_ptr, float *bias_ptr) {
     const auto &jcp = kernel_->jcp;
     const auto &p_ops = attr_->post_ops_;
@@ -447,7 +447,11 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_SGD(
     array_offset_calculator<float, 2> bias(bias_ptr,
         jcp.oc/jcp.oc_simd_block, jcp.oc_simd_block);
 
-    array_offset_calculator<float, 8> U((float *)((this->scratchpad_)->U_ptr()),
+    auto wino_wei = (jcp.prop_kind == prop_kind::forward_inference)
+                ? wei_ptr
+                : (float *)(this->scratchpad_)->U_ptr();
+
+    array_offset_calculator<float, 8> U(wino_wei,
             jcp.dimM_nb_block,
             alpha, alpha,
             jcp.dimK_nb_block,
@@ -479,29 +483,26 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_SGD(
 
 #pragma omp parallel
     {
+    if (jcp.prop_kind != prop_kind::forward_inference) {
 #pragma omp for collapse(4) schedule(static)
-    for (int ofm1 = 0; ofm1 < jcp.nb_oc; ofm1++) {
+        for (int ofm1 = 0; ofm1 < jcp.nb_oc; ofm1++) {
         for (int ifm1 = 0; ifm1 < jcp.nb_ic; ifm1++) {
-            for (int ofm2 = 0; ofm2 < jcp.oc_block * jcp.oc_reg_block; ofm2++) {
-                for (int ifm2 = 0; ifm2 < jcp.ic_block * jcp.ic_reg_block;
-                      ifm2++) {
-                    float *U_base_ptr = is_fwd
-                                      ? &(U(ofm1, 0, 0, ifm1, ofm2, ifm2, 0, 0))
-                                      : &(U(ifm1, 0, 0, ofm1, ifm2, ofm2, 0, 0));
-                    weight_transform_data(jcp,
-                            &(weights(
-                                ofm1 * jcp.oc_block * jcp.oc_reg_block + ofm2,
-                                ifm1 * jcp.ic_block * jcp.ic_reg_block + ifm2,
-                                0, 0, 0, 0)),
-                            U_base_ptr);
-                }
-            }
-        }
+        for (int ofm2 = 0; ofm2 < jcp.oc_block * jcp.oc_reg_block; ofm2++) {
+        for (int ifm2 = 0; ifm2 < jcp.ic_block * jcp.ic_reg_block; ifm2++) {
+            float *U_base_ptr = is_fwd
+                                ? &(U(ofm1, 0, 0, ifm1, ofm2, ifm2, 0, 0))
+                                : &(U(ifm1, 0, 0, ofm1, ifm2, ofm2, 0, 0));
+            weight_transform_data(jcp,
+                    &(weights(ofm1 * jcp.oc_block * jcp.oc_reg_block + ofm2,
+                              ifm1 * jcp.ic_block * jcp.ic_reg_block + ifm2,
+                              0, 0, 0, 0)),
+                    U_base_ptr);
+        }}}}
     }
 
     int ithr = omp_get_thread_num();
 
-    #pragma omp for schedule(static)
+#pragma omp for schedule(static)
     for (int tile_block = 0; tile_block < jcp.tile_block; tile_block++) {
         for (int K_blk1 = 0; K_blk1 < jcp.dimK_nb_block; K_blk1++) {
             for (int K_blk2 = 0; K_blk2 < jcp.dimK_block; K_blk2++) {
@@ -548,10 +549,10 @@ void _jit_avx512_core_convolution_winograd_t<is_fwd>::_execute_data_W_SGD(
 }
 
 template void
-_jit_avx512_core_convolution_winograd_t<true>::_execute_data_W_SGD(
+_jit_avx512_core_fp32_wino_conv_4x3_t<true>::_execute_data_W_SGD(
         float *, float *, float *, float *);
 template void
-_jit_avx512_core_convolution_winograd_t<false>::_execute_data_W_SGD(
+_jit_avx512_core_fp32_wino_conv_4x3_t<false>::_execute_data_W_SGD(
         float *, float *, float *, float *);
 
 namespace {
@@ -689,7 +690,7 @@ void array_sum(size_t num_arrs, float *output,
 }
 } //bwdw namespace
 
-void jit_avx512_core_convolution_winograd_bwd_weights_t::
+void jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_t::
 _execute_backward_weights_SDGtWo() {
     const auto &jcp = kernel_->jcp;
     const int nthreads = scratchpad_->num_threads();
@@ -846,7 +847,7 @@ _execute_backward_weights_SDGtWo() {
     }
 }
 
-void jit_avx512_core_convolution_winograd_bwd_weights_t::
+void jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_t::
 _execute_backward_weights_S_D_Giot_W() {
     const auto &jcp = kernel_->jcp;
     const int nthreads = scratchpad_->num_threads();
