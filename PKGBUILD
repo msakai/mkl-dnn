@@ -6,7 +6,7 @@ _mklpackage=mklml_win_${_mklversion}
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 pkgver=0.16
-pkgrel=1
+pkgrel=2
 pkgdesc="MKL-DNN - Intel(R) Math Kernel Library for Deep Neural Networks (mingw-w64)"
 arch=('x86_64')
 url='https://github.com/intel/mkl-dnn'
@@ -34,6 +34,7 @@ build() {
   ${MINGW_PREFIX}/bin/cmake.exe \
     -G "MSYS Makefiles" \
     -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DARCH_OPT_FLAGS="" \
     "${srcdir}/${_realname}-${pkgver}"
   make -j1
 }
