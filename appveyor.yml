@@ -8,5 +8,8 @@ install:
 build_script:
 - bash -c "MINGW_INSTALLS=mingw64 makepkg-mingw -sLf"
 
+test_script:
+- pacman -U --noconfirm mingw-w64-x86_64-mkl-dnn-*.pkg.tar.xz
+
 artifacts:
 - path: '*.pkg.tar.xz'
