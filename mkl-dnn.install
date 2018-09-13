@@ -1,5 +1,5 @@
 post_install() {
-    if [[ $(ldd ${pkgdir}${MINGW_PREFIX}/bin/libmkldnn.dll | grep MSVCR120.dll) ]]; then
+    if [[ -z $(ldd ${pkgdir}${MINGW_PREFIX}/bin/libmkldnn.dll | grep MSVCR120.dll) ]]; then
         echo "libmkldnn depends on MSVCR120.dll but it is not found.";
         echo "MSVCR120.dll is contained in Microsoft Visual Studio 2013 Runtime Package.";
         echo "Please download from https://www.microsoft.com/en-us/download/details.aspx?id=40784 and install it.";
