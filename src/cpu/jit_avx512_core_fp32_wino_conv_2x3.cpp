@@ -236,7 +236,7 @@ struct jit_avx512_core_fp32_wino_conv_2x3_dst_trans_t: public jit_generator {
     Reg64 reg_oc_block = r8;
 
     Reg64 reg_ptr_bias = rbx;
-    Reg64 reg_ptr_scales = rcx;
+    Reg64 reg_ptr_scales = abi_not_param1;
     Reg64 reg_ptr_sum_scale = rdx;
 };
 
@@ -458,11 +458,11 @@ bool jit_avx512_core_fp32_wino_conv_2x3_fwd_ker_t::post_ops_ok(
    switch (p.len_) {
     case 0: return true;
     case 1: return true
-                && implication(jcp.with_relu, p.contain(sum, 0))
-                && implication(!jcp.with_relu, is_relu(0) || p.contain(sum, 0));
+                && IMPLICATION(jcp.with_relu, p.contain(sum, 0))
+                && IMPLICATION(!jcp.with_relu, is_relu(0) || p.contain(sum, 0));
     case 2: return true
-                && implication(jcp.with_relu, p.contain(sum, 0) && is_relu(1))
-                && implication(!jcp.with_relu, false
+                && IMPLICATION(jcp.with_relu, p.contain(sum, 0) && is_relu(1))
+                && IMPLICATION(!jcp.with_relu, false
                         || (p.contain(sum, 0) && is_relu(1))
                         || (p.contain(sum, 1) && is_relu(0)));
     case 3: return true
@@ -593,6 +593,7 @@ status_t jit_avx512_core_fp32_wino_conv_2x3_fwd_ker_t ::init_conf(
     jcp.ngroups = with_groups ? wei_d.dims()[0] : 1;
     jcp.mb = src_d.dims()[0];
     jcp.oc = dst_d.dims()[1] / jcp.ngroups;
+    jcp.oc_without_padding = jcp.oc;
     jcp.ic = src_d.dims()[1] / jcp.ngroups;
     jcp.ih = src_d.dims()[2];
     jcp.iw = src_d.dims()[3];
@@ -612,6 +613,27 @@ status_t jit_avx512_core_fp32_wino_conv_2x3_fwd_ker_t ::init_conf(
     jcp.m = 2;
     jcp.r = 3;
     jcp.alpha = jcp.m + jcp.r - 1;
+    int simdw = 16;
+    jcp.src_fmt = src_d.format();
+    jcp.with_bias = cd.bias_desc.format != memory_format::undef;
+    jcp.with_relu = with_relu;
+    jcp.relu_negative_slope = relu_negative_slope;
+    if (!IMPLICATION(with_relu, relu_negative_slope == 0.))
+        return status::unimplemented;
+    if (!post_ops_ok(jcp, attr))
+        return status::unimplemented;
+
+    bool ok_to_pad_channels = jcp.ngroups == 1;
+    if (ok_to_pad_channels) {
+        jcp.oc = rnd_up(jcp.oc, simdw);
+        jcp.ic = rnd_up(jcp.ic, simdw);
+    }
+
+    if (src_d.format() != nChw16c
+            || dst_d.format() != nChw16c
+            || !IMPLICATION(jcp.with_bias,
+                bias_d.format() == x))
+        return status::unimplemented;
 
     jcp.ver = ver_avx512_core;
     if (!(mayiuse(avx512_core)))
@@ -627,7 +649,6 @@ status_t jit_avx512_core_fp32_wino_conv_2x3_fwd_ker_t ::init_conf(
     if (mayiuse(avx512_core_vnni))
         jcp.ver = ver_vnni;
 
-    int simdw = 16;
     jcp.ic_block = simdw;
     jcp.oc_block = simdw;
 
@@ -652,7 +673,7 @@ status_t jit_avx512_core_fp32_wino_conv_2x3_fwd_ker_t ::init_conf(
     auto wei_sz = (float)aa * ic * oc;
     auto inp_sz = (float)mb * ih * iw * ic;
     auto sp_sz = (float)mb * ih * iw;
-    const int nthr = omp_get_max_threads();
+    const int nthr = mkldnn_get_max_threads();
 
     /* Heuristics here. Numbers '28','196' is an observation from data. */
     if (wei_sz / inp_sz > 5)
@@ -666,15 +687,6 @@ status_t jit_avx512_core_fp32_wino_conv_2x3_fwd_ker_t ::init_conf(
                 || inp_sz > L2_cap * nthr + L3_capacity))
         || (jcp.small_mb && sp_sz > 196))
         return unimplemented;
-
-    jcp.src_fmt = src_d.format();
-    jcp.with_bias = cd.bias_desc.format != memory_format::undef;
-    jcp.with_relu = with_relu;
-    jcp.relu_negative_slope = relu_negative_slope;
-    if (!implication(with_relu, relu_negative_slope == 0.))
-        return status::unimplemented;
-    if (!post_ops_ok(jcp, attr))
-        return status::unimplemented;
 
     jcp.bia_dt = jcp.with_bias ? cd.bias_desc.data_type : data_type::undef;
     jcp.dst_dt = cd.dst_desc.data_type;
@@ -802,7 +814,7 @@ status_t jit_avx512_core_fp32_wino_conv_2x3_fwd_ker_t ::init_conf(
 
     const auto &oscales = attr.output_scales_;
     jcp.is_oc_scale = oscales.mask_ == 1 << 1;
-    assert(utils::implication(!jcp.is_oc_scale, oscales.mask_ == 0));
+    assert(IMPLICATION(!jcp.is_oc_scale, oscales.mask_ == 0));
 
     /* re-create weights primitive descriptor
                                     and set weights wino_blocking */
@@ -819,6 +831,7 @@ status_t jit_avx512_core_fp32_wino_conv_2x3_fwd_ker_t ::init_conf(
     wd.oc_block = jcp.oc_block;
     wd.oc2_block = jcp.n2_block;
     wd.ic2_block = 1;
+    wd.adj_scale = 1.f;
     size_t max_size = sizeof(float) * jcp.alpha * jcp.alpha * jcp.ic * jcp.oc;
     wd.size = max_size;
 
@@ -840,8 +853,8 @@ _jit_avx512_core_fp32_wino_conv_2x3_fwd_t<with_relu>::
         _jit_avx512_core_fp32_wino_conv_2x3_fwd_t(const pd_t *pd,
                 const input_vector &inputs, const output_vector &outputs)
     : cpu_primitive_t(&conf_, inputs, outputs)
-    , conf_(*pd) {
-    const int nthreads = omp_get_max_threads();
+    , conf_(*pd), padded_bias_(nullptr) {
+    const int nthreads = mkldnn_get_max_threads();
     kernel_ = new jit_avx512_core_fp32_wino_conv_2x3_fwd_ker_t(
             conf_.jcp_, *conf_.attr());
     src_trans_ = new jit_avx512_core_fp32_wino_conv_2x3_src_trans_t(
@@ -857,6 +870,14 @@ _jit_avx512_core_fp32_wino_conv_2x3_fwd_t<with_relu>::
 
     wino_src_ = (float *)malloc(sizeof(float) * nthreads * size_wino_src, 4096);
     wino_dst_ = (float *)malloc(sizeof(float) * nthreads * size_wino_dst, 4096);
+    if (conf_.want_padded_bias()) {
+        const auto &j = conf_.jcp_;
+        assert(j.ngroups == 1);
+        padded_bias_ = (float *)malloc(sizeof(float) * j.oc, 64);
+        for (int oc = j.oc_without_padding; oc < j.oc; ++oc)
+            padded_bias_[oc] = 0;
+    }
+
 
 }
 
@@ -869,6 +890,7 @@ _jit_avx512_core_fp32_wino_conv_2x3_fwd_t<with_relu>
 
     free(wino_src_);
     free(wino_dst_);
+    free(padded_bias_);
 }
 
 template <bool with_relu>
@@ -887,7 +909,7 @@ void _jit_avx512_core_fp32_wino_conv_2x3_fwd_t<with_relu>
 ::execute_forward_mbN() {
     auto src = reinterpret_cast<const float *>(input_memory(0));
     auto wei = reinterpret_cast<const float *>(input_memory(1));
-    auto bia = reinterpret_cast<const char *>(input_memory(2));
+    auto bia = reinterpret_cast<const float *>(input_memory(2));
     auto dst = reinterpret_cast<float *>(memory(0));
 
     const auto &jcp = kernel_->jcp;
@@ -895,110 +917,114 @@ void _jit_avx512_core_fp32_wino_conv_2x3_fwd_t<with_relu>
 
     wino_wei_ = wei;
 
-#pragma omp parallel for collapse(3)
-    for (int mb = 0; mb < jcp.mb; mb++) {
-        for (int tile_y = 0; tile_y < jcp.oh; tile_y += jcp.yb) {
-            for (int tile_x = 0; tile_x < jcp.ow; tile_x += jcp.xb) {
+    if (conf_.want_padded_bias()) {
+        for (int oc = 0; oc < jcp.oc_without_padding; ++oc)
+            padded_bias_[oc] = bia[oc];
+        bia = padded_bias_;
+    }
 
-                int ithr = omp_get_thread_num();
-                auto wino_src = wino_src_ + size_wino_src * ithr;
-                auto wino_dst = wino_dst_ + size_wino_dst * ithr;
+    parallel_nd(jcp.mb, div_up(jcp.oh,jcp.yb), div_up(jcp.ow, jcp.xb),
+        [&](int mb, int tile_y_b, int tile_x_b) {
+        int tile_y = tile_y_b * jcp.yb;
+        int tile_x = tile_x_b * jcp.xb;
 
-                auto src_trans_p =
-                    jit_avx512_core_fp32_wino_conv_2x3_src_trans_t
-                        ::call_params_t();
-                auto dst_trans_p =
-                    jit_avx512_core_fp32_wino_conv_2x3_dst_trans_t
-                        ::call_params_t();
-                auto gemm_p = jit_avx512_core_fp32_wino_conv_2x3_fwd_ker_t ::
-                        call_params_t();
+        int ithr = mkldnn_get_thread_num();
+        auto wino_src = wino_src_ + size_wino_src * ithr;
+        auto wino_dst = wino_dst_ + size_wino_dst * ithr;
 
-                /* transformation of input tensor to winograd domain */
-                for (int y_in_block = 0; y_in_block < jcp.yb; y_in_block += 2) {
-                    for (int x_in_block = 0; x_in_block < jcp.xb;
-                            x_in_block += 2) {
+        auto src_trans_p =
+            jit_avx512_core_fp32_wino_conv_2x3_src_trans_t
+                ::call_params_t();
+        auto dst_trans_p =
+            jit_avx512_core_fp32_wino_conv_2x3_dst_trans_t
+                ::call_params_t();
+        auto gemm_p = jit_avx512_core_fp32_wino_conv_2x3_fwd_ker_t ::
+                call_params_t();
 
-                        unsigned short v_y_masks[4], v_x_masks[4];
+        /* transformation of input tensor to winograd domain */
+        for (int y_in_block = 0; y_in_block < jcp.yb; y_in_block += 2) {
+            for (int x_in_block = 0; x_in_block < jcp.xb;
+                    x_in_block += 2) {
 
-                        int y = y_in_block + tile_y;
-                        int x = x_in_block + tile_x;
-                        int m = (y_in_block / 2) * (jcp.xb / 2)
-                                + (x_in_block / 2);
+                unsigned short v_y_masks[4], v_x_masks[4];
 
-                        int v_ys = nstl::max(0, jcp.t_pad - y);
-                        int v_ye = nstl::min(jcp.alpha,
-                                nstl::max(0, jcp.ih + jcp.t_pad - y));
+                int y = y_in_block + tile_y;
+                int x = x_in_block + tile_x;
+                int m = (y_in_block / 2) * (jcp.xb / 2)
+                        + (x_in_block / 2);
 
-                        int v_xs = nstl::max(0, jcp.l_pad - x);
-                        int v_xe = nstl::min(jcp.alpha,
-                                nstl::max(0, jcp.iw + jcp.l_pad - x));
+                int v_ys = nstl::max(0, jcp.t_pad - y);
+                int v_ye = nstl::min(jcp.alpha,
+                        nstl::max(0, jcp.ih + jcp.t_pad - y));
+
+                int v_xs = nstl::max(0, jcp.l_pad - x);
+                int v_xe = nstl::min(jcp.alpha,
+                        nstl::max(0, jcp.iw + jcp.l_pad - x));
 
 #pragma unroll(4)
-                        for (int i = 0; i < jcp.alpha; i++) {
-                            v_y_masks[i] = (i < v_ys || i >= v_ye) ? 0 : 0xffff;
-                            v_x_masks[i] = (i < v_xs || i >= v_xe) ? 0 : 0xffff;
-                        }
-                        auto local_s = src
-                                + mb * jcp.nb_ic * jcp.ih * jcp.iw
-                                        * jcp.ic_block
-                                + y * jcp.iw * jcp.ic_block + x * jcp.ic_block;
-                        auto local_w = wino_src + m * jcp.ic;
-
-                        src_trans_p.src = local_s;
-                        src_trans_p.wino_src = local_w;
-                        src_trans_p.v_y_masks = v_y_masks;
-                        src_trans_p.v_x_masks = v_x_masks;
-
-                        src_trans_->ker_(&src_trans_p);
-                    }
+                for (int i = 0; i < jcp.alpha; i++) {
+                    v_y_masks[i] = (i < v_ys || i >= v_ye) ? 0 : 0xffff;
+                    v_x_masks[i] = (i < v_xs || i >= v_xe) ? 0 : 0xffff;
                 }
-                /* gemms */
-                for (int tile_ij = 0; tile_ij < 16; tile_ij++) {
-                    int offset = (tile_ij + ithr) % 16;
-                    gemm_p.src = wino_src + jcp.inp_stride * offset;
-                    gemm_p.dst = wino_dst + jcp.out_stride * offset;
-                    gemm_p.wei = wino_wei_ + jcp.wei_stride * offset;
+                auto local_s = src
+                        + mb * jcp.nb_ic * jcp.ih * jcp.iw
+                                * jcp.ic_block
+                        + y * jcp.iw * jcp.ic_block + x * jcp.ic_block;
+                auto local_w = wino_src + m * jcp.ic;
 
-                    kernel_->ker_(&gemm_p);
-                }
+                src_trans_p.src = local_s;
+                src_trans_p.wino_src = local_w;
+                src_trans_p.v_y_masks = v_y_masks;
+                src_trans_p.v_x_masks = v_x_masks;
 
-                /* transformation from winograd domain to output tensor */
-                for (int y_in_block = 0; y_in_block < jcp.yb; y_in_block += 2) {
-                    for (int x_in_block = 0; x_in_block < jcp.xb;
-                            x_in_block += 2) {
-                        unsigned short v_y_masks[2], v_x_masks[2];
-
-                        int y = y_in_block + tile_y;
-                        int x = x_in_block + tile_x;
-                        int m = (y_in_block / 2) * (jcp.xb / 2)
-                                + (x_in_block / 2);
-
-#pragma unroll(2)
-                        for (int i = 0; i < jcp.m; i++) {
-                            v_x_masks[i] = (x + i < jcp.ow) ? 0xffff : 0;
-                            v_y_masks[i] = (y + i < jcp.oh) ? 0xffff : 0;
-                        }
-                        auto local_d = dst
-                                + mb * jcp.nb_oc * jcp.oh * jcp.ow
-                                        * jcp.oc_block
-                                + y * jcp.ow * jcp.oc_block + x * jcp.oc_block;
-                        auto local_w = wino_dst + m * jcp.oc;
-
-                        auto scales = oscales.scales_;
-                        dst_trans_p.dst = local_d;
-                        dst_trans_p.wino_dst = local_w;
-                        dst_trans_p.v_y_masks = v_y_masks;
-                        dst_trans_p.v_x_masks = v_x_masks;
-
-                        dst_trans_p.scales = scales;
-                        dst_trans_p.bias = bia;
-
-                        dst_trans_->ker_(&dst_trans_p);
-                    }
-                }
+                src_trans_->ker_(&src_trans_p);
             }
         }
-    }
+        /* gemms */
+        for (int tile_ij = 0; tile_ij < 16; tile_ij++) {
+            int offset = (tile_ij + ithr) % 16;
+            gemm_p.src = wino_src + jcp.inp_stride * offset;
+            gemm_p.dst = wino_dst + jcp.out_stride * offset;
+            gemm_p.wei = wino_wei_ + jcp.wei_stride * offset;
+
+            kernel_->ker_(&gemm_p);
+        }
+
+        /* transformation from winograd domain to output tensor */
+        for (int y_in_block = 0; y_in_block < jcp.yb; y_in_block += 2) {
+            for (int x_in_block = 0; x_in_block < jcp.xb;
+                    x_in_block += 2) {
+                unsigned short v_y_masks[2], v_x_masks[2];
+
+                int y = y_in_block + tile_y;
+                int x = x_in_block + tile_x;
+                int m = (y_in_block / 2) * (jcp.xb / 2)
+                        + (x_in_block / 2);
+
+#pragma unroll(2)
+                for (int i = 0; i < jcp.m; i++) {
+                    v_x_masks[i] = (x + i < jcp.ow) ? 0xffff : 0;
+                    v_y_masks[i] = (y + i < jcp.oh) ? 0xffff : 0;
+                }
+                auto local_d = dst
+                        + mb * jcp.nb_oc * jcp.oh * jcp.ow
+                                * jcp.oc_block
+                        + y * jcp.ow * jcp.oc_block + x * jcp.oc_block;
+                auto local_w = wino_dst + m * jcp.oc;
+
+                auto scales = oscales.scales_;
+                dst_trans_p.dst = local_d;
+                dst_trans_p.wino_dst = local_w;
+                dst_trans_p.v_y_masks = v_y_masks;
+                dst_trans_p.v_x_masks = v_x_masks;
+
+                dst_trans_p.scales = scales;
+                dst_trans_p.bias = bia;
+
+                dst_trans_->ker_(&dst_trans_p);
+            }
+        }
+    });
 }
 
 template <bool with_relu>
@@ -1006,7 +1032,7 @@ void _jit_avx512_core_fp32_wino_conv_2x3_fwd_t<with_relu>
     ::execute_forward_small_mb() {
     auto src = reinterpret_cast<const float *>(input_memory(0));
     auto wei = reinterpret_cast<const float *>(input_memory(1));
-    auto bia = reinterpret_cast<const char *>(input_memory(2));
+    auto bia = reinterpret_cast<const float *>(input_memory(2));
     auto dst = reinterpret_cast<float *>(memory(0));
 
     const auto &jcp = kernel_->jcp;
@@ -1014,13 +1040,21 @@ void _jit_avx512_core_fp32_wino_conv_2x3_fwd_t<with_relu>
 
     wino_wei_ = wei;
 
+    if (conf_.want_padded_bias()) {
+        for (int oc = 0; oc < jcp.oc_without_padding; ++oc)
+            padded_bias_[oc] = bia[oc];
+        bia = padded_bias_;
+    }
+
     for (int mb = 0; mb < jcp.mb; mb++) {
     for (int tile_y = 0; tile_y < jcp.oh; tile_y += jcp.yb) {
     for (int tile_x = 0; tile_x < jcp.ow; tile_x += jcp.xb) {
         /* transformation of input tensor to winograd domain */
-        #pragma omp parallel for collapse(2)
-        for (int y_in_block = 0; y_in_block < jcp.yb; y_in_block += 2) {
-        for (int x_in_block = 0; x_in_block < jcp.xb; x_in_block += 2) {
+        parallel_nd(div_up(jcp.yb, 2), div_up(jcp.xb, 2),
+            [&](int y_in_block_b, int x_in_block_b) {
+            int y_in_block = y_in_block_b * 2;
+            int x_in_block = x_in_block_b * 2;
+
             auto src_trans_p = jit_avx512_core_fp32_wino_conv_2x3_src_trans_t ::
                     call_params_t();
 
@@ -1054,12 +1088,10 @@ void _jit_avx512_core_fp32_wino_conv_2x3_fwd_t<with_relu>
             src_trans_p.v_x_masks = v_x_masks;
 
             src_trans_->ker_(&src_trans_p);
-        }}
+        });
 
         /* gemms */
-        #pragma omp parallel for collapse(2)
-        for (int tile_ij = 0; tile_ij < 16; tile_ij++) {
-        for (int nnb = 0; nnb < jcp.n_chunks; nnb++) {
+        parallel_nd(16, jcp.n_chunks, [&](int tile_ij, int nnb) {
             auto gemm_p = jit_avx512_core_fp32_wino_conv_2x3_fwd_ker_t ::
                     call_params_t();
 
@@ -1070,13 +1102,14 @@ void _jit_avx512_core_fp32_wino_conv_2x3_fwd_t<with_relu>
                     + nnb * jcp.n2_block * jcp.n_block * jcp.K;
 
             kernel_->ker_(&gemm_p);
-        }
-        }
+        });
 
         /* transformation from winograd domain to output tensor */
-        #pragma omp parallel for collapse(2)
-        for (int y_in_block = 0; y_in_block < jcp.yb; y_in_block += 2) {
-        for (int x_in_block = 0; x_in_block < jcp.xb; x_in_block += 2) {
+
+        parallel_nd(div_up(jcp.yb, 2), div_up(jcp.xb, 2),
+            [&](int y_in_block_b, int x_in_block_b) {
+            int y_in_block = y_in_block_b * 2;
+            int x_in_block = x_in_block_b * 2;
 
             auto dst_trans_p = jit_avx512_core_fp32_wino_conv_2x3_dst_trans_t ::
                     call_params_t();
@@ -1107,7 +1140,7 @@ void _jit_avx512_core_fp32_wino_conv_2x3_fwd_t<with_relu>
             dst_trans_p.bias = bia;
 
             dst_trans_->ker_(&dst_trans_p);
-        }}
+        });
     }}}
 }
 

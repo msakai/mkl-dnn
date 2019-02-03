@@ -115,7 +115,7 @@ struct jit_uni_reorder_kernel_f32: public kernel_t, public jit_generator {
             && utils::one_of(p.beta, 0.f, 1.f) /* anything else? */
             && simple_impl_desc_init(p, nullptr)
             && mayiuse(sse42)
-            && utils::implication(!utils::everyone_is(f32, p.itype, p.otype),
+            && IMPLICATION(!utils::everyone_is(f32, p.itype, p.otype),
                     mayiuse(avx512_core));
         if (!ok) return false;
 
@@ -432,7 +432,8 @@ struct jit_uni_reorder_kernel_f32: public kernel_t, public jit_generator {
                             scale_load_type = scale_load_type_t::load;
 
                     if (scale_load_type == scale_load_type_t::bcast) {
-                        vbroadcastss(xmm_scale, s_addr(s_off[ur]));
+                        movss(xmm_scale, s_addr(s_off[ur]));
+                        shufps(xmm_scale, xmm_scale, 0x0);
                         mulps(Xmm(ur), xmm_scale);
                         continue;
                     }
@@ -443,7 +444,7 @@ struct jit_uni_reorder_kernel_f32: public kernel_t, public jit_generator {
                             scale_load_type = scale_load_type_t::gather;
 
                     if (scale_load_type == scale_load_type_t::load) {
-                        vmovups(xmm_scale, s_addr(s_off[ur]));
+                        movups(xmm_scale, s_addr(s_off[ur]));
                         mulps(Xmm(ur), xmm_scale);
                         continue;
                     }
@@ -652,7 +653,7 @@ private:
 
     Reg64 reg_ptr_in = rsi;
     Reg64 reg_ptr_out = rdx;
-    Reg64 reg_ptr_scale = rcx;
+    Reg64 reg_ptr_scale = abi_not_param1;
 
     Reg64 reg_off_in = r8;
     Reg64 reg_off_out = r9;
@@ -742,7 +743,7 @@ static void prb_thread_kernel_balance(tr::prb_t &prb, int &ndims_ker_max) {
     /* sz_drv_min is the minimal size for the parallel
      * driver required for good parallelization */
     const size_t sz_drv_min = nstl::min<size_t>(
-            16 * omp_get_max_threads(),
+            16 * mkldnn_get_max_threads(),
             utils::div_up(sz_total, 1024));
 
     /* kdims -- # of dimensions processed by a kernel
@@ -875,25 +876,23 @@ struct jit_uni_reorder_t : public cpu_primitive_t {
         (*kernel_)(&c);
     }
 
-    void omp_driver_1d(int off, const char *in, char *out, const float *scale) {
+    void omp_driver_1d(int ithr, int nthr, int off, const char *in, char *out,
+            const float *scale) {
         tr::node_t *ns = conf_.prb_.nodes + off;
-#       pragma omp for
-        for (ptrdiff_t d0 = 0; d0 < (ptrdiff_t)ns[0].n; ++d0)
-        {
+        for_nd(ithr, nthr, (ptrdiff_t)ns[0].n, [&](ptrdiff_t d0) {
             auto c = tr::call_param_t();
             c.in = in + d0 * ns[0].is * data_type_size(conf_.prb_.itype);
             c.out = out + d0 * ns[0].os * data_type_size(conf_.prb_.otype);
             c.scale = scale + d0 * ns[0].ss;
             (*kernel_)(&c);
-        }
+        });
     }
 
-    void omp_driver_2d(int off, const char *in, char *out, const float *scale) {
+    void omp_driver_2d(int ithr, int nthr, int off, const char *in, char *out,
+            const float *scale) {
         tr::node_t *ns = conf_.prb_.nodes + off;
-#       pragma omp for collapse(2)
-        for (ptrdiff_t d1 = 0; d1 < (ptrdiff_t)ns[1].n; ++d1)
-        for (ptrdiff_t d0 = 0; d0 < (ptrdiff_t)ns[0].n; ++d0)
-        {
+        for_nd(ithr, nthr, (ptrdiff_t)ns[1].n, (ptrdiff_t)ns[0].n,
+                [&](ptrdiff_t d1, ptrdiff_t d0) {
             auto c = tr::call_param_t();
             c.in = in + (d0 * ns[0].is + d1 * ns[1].is)
                 * data_type_size(conf_.prb_.itype);
@@ -901,16 +900,15 @@ struct jit_uni_reorder_t : public cpu_primitive_t {
                 * data_type_size(conf_.prb_.otype);
             c.scale = scale + d0 * ns[0].ss + d1 * ns[1].ss;
             (*kernel_)(&c);
-        }
+        });
     }
 
-    void omp_driver_3d(int off, const char *in, char *out, const float *scale) {
+    void omp_driver_3d(int ithr, int nthr, int off, const char *in, char *out,
+            const float *scale) {
         tr::node_t *ns = conf_.prb_.nodes + off;
-#       pragma omp for collapse(3)
-        for (ptrdiff_t d2 = 0; d2 < (ptrdiff_t)ns[2].n; ++d2)
-        for (ptrdiff_t d1 = 0; d1 < (ptrdiff_t)ns[1].n; ++d1)
-        for (ptrdiff_t d0 = 0; d0 < (ptrdiff_t)ns[0].n; ++d0)
-        {
+        for_nd(ithr, nthr, (ptrdiff_t)ns[2].n, (ptrdiff_t)ns[1].n,
+                (ptrdiff_t)ns[0].n,
+                [&](ptrdiff_t d2, ptrdiff_t d1, ptrdiff_t d0) {
             auto c = tr::call_param_t();
             c.in = in + (d0 * ns[0].is + d1 * ns[1].is + d2 * ns[2].is)
                 * data_type_size(conf_.prb_.itype);
@@ -918,17 +916,15 @@ struct jit_uni_reorder_t : public cpu_primitive_t {
                 * data_type_size(conf_.prb_.otype);
             c.scale = scale + d0 * ns[0].ss + d1 * ns[1].ss + d2 * ns[2].ss;
             (*kernel_)(&c);
-        }
+        });
     }
 
-    void omp_driver_4d(int off, const char *in, char *out, const float *scale) {
+    void omp_driver_4d(int ithr, int nthr, int off, const char *in, char *out,
+            const float *scale) {
         tr::node_t *ns = conf_.prb_.nodes + off;
-#       pragma omp for collapse(4)
-        for (ptrdiff_t d3 = 0; d3 < (ptrdiff_t)ns[3].n; ++d3)
-        for (ptrdiff_t d2 = 0; d2 < (ptrdiff_t)ns[2].n; ++d2)
-        for (ptrdiff_t d1 = 0; d1 < (ptrdiff_t)ns[1].n; ++d1)
-        for (ptrdiff_t d0 = 0; d0 < (ptrdiff_t)ns[0].n; ++d0)
-        {
+        for_nd(ithr, nthr, (ptrdiff_t)ns[3].n, (ptrdiff_t)ns[2].n,
+                (ptrdiff_t)ns[1].n, (ptrdiff_t)ns[0].n,
+                [&](ptrdiff_t d3, ptrdiff_t d2, ptrdiff_t d1, ptrdiff_t d0) {
             auto c = tr::call_param_t();
             c.in = in + (d0 * ns[0].is + d1 * ns[1].is + d2 * ns[2].is
                     + d3 * ns[3].is) * data_type_size(conf_.prb_.itype);
@@ -937,7 +933,7 @@ struct jit_uni_reorder_t : public cpu_primitive_t {
             c.scale = scale + d0 * ns[0].ss + d1 * ns[1].ss + d2 * ns[2].ss
                 + d3 * ns[3].ss;
             (*kernel_)(&c);
-        }
+        });
     }
 
     void omp_driver(const char *in, char *out, const float *scale) {
@@ -956,18 +952,17 @@ struct jit_uni_reorder_t : public cpu_primitive_t {
             omp_driver_0d(ndims_ker, in, out, scale);
             restore_rnd_mode();
         } else {
-#           pragma omp parallel
-            {
+            parallel(0, [&](const int ithr, const int nthr) {
                 set_rnd_mode(conf_.attr()->round_mode_);
                 switch (ndims - ndims_ker) {
-                case 1: omp_driver_1d(ndims_ker, in, out, scale); break;
-                case 2: omp_driver_2d(ndims_ker, in, out, scale); break;
-                case 3: omp_driver_3d(ndims_ker, in, out, scale); break;
-                case 4: omp_driver_4d(ndims_ker, in, out, scale); break;
+                case 1: omp_driver_1d(ithr, nthr, ndims_ker, in, out, scale); break;
+                case 2: omp_driver_2d(ithr, nthr, ndims_ker, in, out, scale); break;
+                case 3: omp_driver_3d(ithr, nthr, ndims_ker, in, out, scale); break;
+                case 4: omp_driver_4d(ithr, nthr, ndims_ker, in, out, scale); break;
                 default: assert(!"unimplemented");
                 }
                 restore_rnd_mode();
-            }
+            });
         }
     }
 

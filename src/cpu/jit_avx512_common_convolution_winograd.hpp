@@ -21,6 +21,7 @@
 #include "cpu_convolution_pd.hpp"
 #include "cpu_engine.hpp"
 #include "scratchpad.hpp"
+#include "mkldnn_thread.hpp"
 
 #include "jit_avx512_common_conv_winograd_kernel_f32.hpp"
 
@@ -74,7 +75,7 @@ struct winograd_scratchpad_t {
 
     private:
         inline void get_scratchpad_size_(const jit_conv_winograd_conf_t &jcp) {
-            nthreads_ = omp_get_max_threads();
+            nthreads_ = mkldnn_get_max_threads();
 
             U_sz_ = (size_t)alpha * alpha * jcp.ic * jcp.oc * sizeof(float);
             V_sz_ = (size_t)alpha * alpha * jcp.mb * jcp.ic
@@ -227,12 +228,14 @@ struct _jit_avx512_common_convolution_winograd_fwd_t
                     && utils::one_of(this->cdesc_().prop_kind, forward_training,
                                forward_inference)
                     && this->cdesc_().alg_kind == alg_kind::convolution_winograd
+                    && !this->has_zero_dim_memory()
                     && utils::everyone_is(data_type::f32,
                                this->cdesc_().src_desc.data_type,
                                this->cdesc_().weights_desc.data_type,
                                this->cdesc_().dst_desc.data_type)
-                    && utils::implication(this->with_bias(), data_type::f32
-                                       == this->cdesc_().bias_desc.data_type);
+                    && IMPLICATION(this->with_bias(), data_type::f32
+                                       == this->cdesc_().bias_desc.data_type)
+                    && mkldnn_thr_syncable();
             if (!ok)
                 return status::unimplemented;
 
@@ -321,10 +324,12 @@ struct jit_avx512_common_convolution_winograd_bwd_data_t
             bool ok = true && this->set_default_params() == status::success
                     && utils::one_of(this->desc()->prop_kind, backward_data)
                     && this->desc()->alg_kind == alg_kind::convolution_winograd
+                    && !this->has_zero_dim_memory()
                     && utils::everyone_is(data_type::f32,
                                this->desc()->diff_src_desc.data_type,
                                this->desc()->weights_desc.data_type,
-                               this->desc()->diff_dst_desc.data_type);
+                               this->desc()->diff_dst_desc.data_type)
+                    && mkldnn_thr_syncable();
             if (!ok)
                 return status::unimplemented;
 
@@ -413,10 +418,12 @@ struct jit_avx512_common_convolution_winograd_bwd_weights_t
             bool ok = true && this->set_default_params() == status::success
                     && utils::one_of(this->desc()->prop_kind, backward_weights)
                     && this->desc()->alg_kind == alg_kind::convolution_winograd
+                    && !this->has_zero_dim_memory()
                     && utils::everyone_is(data_type::f32,
                                this->desc()->src_desc.data_type,
                                this->desc()->diff_dst_desc.data_type,
-                               this->desc()->diff_weights_desc.data_type);
+                               this->desc()->diff_weights_desc.data_type)
+                    && mkldnn_thr_syncable();
             if (!ok)
                 return status::unimplemented;
 

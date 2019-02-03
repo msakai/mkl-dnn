@@ -44,14 +44,17 @@ struct _gemm_convolution_fwd_t: public cpu_primitive_t {
         inline memory_format_t src_format()
         {
             using namespace memory_format;
-            return (this->cdesc_().src_desc.ndims == 4) ? nchw : ncdhw;
+            return (utils::pick(this->cdesc_().src_desc.ndims - 3,
+                ncw, nchw, ncdhw));
         }
         inline memory_format_t wei_format()
         {
             using namespace memory_format;
-            return (this->cdesc_().src_desc.ndims == 4)
-                ? this->with_groups() ? goihw : oihw
-                : this->with_groups() ? goidhw : oidhw;
+            return (this->with_groups()
+                ? utils::pick(this->cdesc_().src_desc.ndims - 3,
+                    goiw, goihw, goidhw)
+                : utils::pick(this->cdesc_().src_desc.ndims - 3,
+                    oiw, oihw, oidhw));
         }
 
         virtual status_t init() override {
@@ -65,11 +68,12 @@ struct _gemm_convolution_fwd_t: public cpu_primitive_t {
                 && utils::one_of(this->cdesc_().prop_kind, forward_training,
                            forward_inference)
                 && this->cdesc_().alg_kind == alg_kind::convolution_direct
+                && !this->has_zero_dim_memory()
                 && utils::everyone_is(data_type::f32,
                            this->cdesc_().src_desc.data_type,
                            this->cdesc_().weights_desc.data_type,
                            this->cdesc_().dst_desc.data_type)
-                && utils::implication(this->with_bias(), data_type::f32
+                && IMPLICATION(this->with_bias(), data_type::f32
                                    == this->cdesc_().bias_desc.data_type)
                 && this->src_pd_.desc()->format == src_format()
                 && this->dst_pd_.desc()->format == src_format()
@@ -128,7 +132,7 @@ struct _gemm_convolution_fwd_t: public cpu_primitive_t {
 
         jit_gemm_convolution_utils::init_conf(conf_.jcp_,
             *(conf_.cdesc()), conf_.src_pd(), conf_.weights_pd(0),
-            conf_.dst_pd(), omp_get_max_threads(), with_relu,
+            conf_.dst_pd(), mkldnn_get_max_threads(), with_relu,
             conf_.negative_slope());
 
         size_t size = (size_t)conf_.jcp_.im2col_sz * sizeof(data_t);
@@ -174,14 +178,17 @@ struct gemm_convolution_bwd_data_t: public cpu_primitive_t {
         inline memory_format_t src_format()
         {
             using namespace memory_format;
-            return (this->desc()->diff_src_desc.ndims == 4) ? nchw : ncdhw;
+            return (utils::pick(this->desc()->diff_src_desc.ndims - 3,
+                ncw, nchw, ncdhw));
         }
         inline memory_format_t wei_format()
         {
             using namespace memory_format;
-            return (this->desc()->diff_src_desc.ndims == 4)
-                ? this->with_groups() ? goihw : oihw
-                : this->with_groups() ? goidhw : oidhw;
+            return (this->with_groups()
+                ? utils::pick(this->desc()->diff_src_desc.ndims - 3,
+                    goiw, goihw, goidhw)
+                : utils::pick(this->desc()->diff_src_desc.ndims - 3,
+                    oiw, oihw, oidhw));
         }
 
         virtual status_t init() override {
@@ -194,6 +201,7 @@ struct gemm_convolution_bwd_data_t: public cpu_primitive_t {
                 && this->set_default_params() == status::success
                 && this->desc()->prop_kind == backward_data
                 && this->desc()->alg_kind == alg_kind::convolution_direct
+                && !this->has_zero_dim_memory()
                 && utils::everyone_is(data_type::f32,
                         this->desc()->diff_src_desc.data_type,
                         this->desc()->weights_desc.data_type,
@@ -228,7 +236,7 @@ struct gemm_convolution_bwd_data_t: public cpu_primitive_t {
 
         jit_gemm_convolution_utils::init_conf(conf_.jcp_,
             *(conf_.desc()), conf_.diff_src_pd(), conf_.weights_pd(0),
-            conf_.diff_dst_pd(), omp_get_max_threads());
+            conf_.diff_dst_pd(), mkldnn_get_max_threads());
 
         size_t size = (size_t)conf_.jcp_.im2col_sz * sizeof(data_t);
         jit_gemm_convolution_utils::prepare_scratchpad(this->conf_.jcp_,
@@ -273,14 +281,17 @@ struct gemm_convolution_bwd_weights_t: public cpu_primitive_t {
         inline memory_format_t src_format()
         {
             using namespace memory_format;
-            return (this->desc()->src_desc.ndims == 4) ? nchw : ncdhw;
+            return (utils::pick(this->desc()->src_desc.ndims - 3,
+                ncw, nchw, ncdhw));
         }
         inline memory_format_t wei_format()
         {
             using namespace memory_format;
-            return (this->desc()->src_desc.ndims == 4)
-                ? this->with_groups() ? goihw : oihw
-                : this->with_groups() ? goidhw : oidhw;
+            return (this->with_groups()
+                ? utils::pick(this->desc()->src_desc.ndims - 3,
+                    goiw, goihw, goidhw)
+                : utils::pick(this->desc()->src_desc.ndims - 3,
+                    oiw, oihw, oidhw));
         }
 
         virtual status_t init() override {
@@ -293,11 +304,12 @@ struct gemm_convolution_bwd_weights_t: public cpu_primitive_t {
             && this->set_default_params() == status::success
             && this->desc()->prop_kind == backward_weights
             && this->desc()->alg_kind == alg_kind::convolution_direct
+            && !this->has_zero_dim_memory()
             && utils::everyone_is(data_type::f32,
                     this->desc()->src_desc.data_type,
                     this->desc()->diff_weights_desc.data_type,
                     this->desc()->diff_dst_desc.data_type)
-            && utils::implication(this->with_bias(),
+            && IMPLICATION(this->with_bias(),
                     data_type::f32 == this->desc()->diff_bias_desc.data_type)
             && this->src_pd_.desc()->format == src_format()
             && this->diff_dst_pd_.desc()->format == src_format()
@@ -331,7 +343,7 @@ struct gemm_convolution_bwd_weights_t: public cpu_primitive_t {
 
         jit_gemm_convolution_utils::init_conf(conf_.jcp_,
             *(conf_.desc()), conf_.src_pd(), conf_.diff_weights_pd(0),
-            conf_.diff_dst_pd(), omp_get_max_threads());
+            conf_.diff_dst_pd(), mkldnn_get_max_threads());
         const memory_desc_wrapper weights_d(conf_.diff_weights_pd(0));
 
         size_t size = (size_t)conf_.jcp_.im2col_sz  * sizeof(data_t);

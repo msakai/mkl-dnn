@@ -44,7 +44,7 @@ bool memory_desc_sanity_check(int ndims,const dims_t dims,
         && format != memory_format::undef;
     if (!ok) return false;
     for (int d = 0; d < ndims; ++d)
-        if (dims[d] <= 0) return false;
+        if (dims[d] < 0) return false;
 
     return true;
 }
@@ -118,7 +118,7 @@ status_t mkldnn_view_primitive_desc_create(primitive_desc_t **view_pd,
 
     memory_desc_wrapper md(*mpd->desc());
     for (int d = 0; d < md.ndims(); ++d) {
-        if (dims[d] <= 0 || offsets[d] < 0
+        if (dims[d] < 0 || offsets[d] < 0
                 || (offsets[d] + dims[d] > md.dims()[d]))
             return invalid_arguments;
     }
@@ -242,9 +242,6 @@ status_t mkldnn_sum_primitive_desc_create_v2(primitive_desc_t **sum_pd,
     for (int i = 0; i < n; ++i) {
         if (input_pds[i] == nullptr ||
                 input_pds[i]->kind() != primitive_kind::memory)
-            return invalid_arguments;
-        auto input_mpd_i = reinterpret_cast<const memory_pd_t *>(input_pds[i]);
-        if (memory_desc_wrapper(input_mpd_i).nelems() == 0)
             return invalid_arguments;
     }
 

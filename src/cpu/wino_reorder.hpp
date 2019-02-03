@@ -68,7 +68,7 @@ private:
 
     wino_reorder_t(const pd_t *pd,
             const input_vector &inputs, const output_vector &outputs)
-        : cpu_primitive_t(pd, inputs, outputs), conf_(*pd) {
+        : cpu_primitive_t(&conf_, inputs, outputs), conf_(*pd) {
         const memory_desc_wrapper input_d(conf_.input_pd());
         const memory_desc_wrapper output_d(conf_.output_pd());
 
@@ -106,6 +106,8 @@ private:
             ic2_block_ = output_d.wino_desc().ic2_block;
         oc2_block_ = output_d.wino_desc().oc2_block;
         assert(nb_ic_ % ic2_block_ == 0 && nb_oc_ % oc2_block_ == 0);
+
+        adj_scale_ = output_d.wino_desc().adj_scale;
 
         size_wino_wei_ = w_alpha_ * w_alpha_ * oc_ * ic_;
         size_wspace_ = r_ * w_alpha_ * oc_block_;
@@ -162,28 +164,23 @@ private:
             out_data_t *__restrict _out
                     = tmp_wei_ + (iic * nb_oc_ + ob) * oc_block_;
 
-#pragma omp parallel for
-            for (int i = 0; i < size_wspace_; ++i)
-                wspace_[i] = 0.f;
+            parallel_nd(size_wspace_, [&](int i) { wspace_[i] = 0.f; });
 
-#pragma omp parallel for collapse(3)
-            for (int ih = 0; ih < r_; ++ih)
-            for (int j = 0; j < w_alpha_; ++j)
-            for (int ioc = 0; ioc < oc_block_; ++ioc)
-            for (int iw = 0; iw < r_; ++iw) {
-                int inp_oc = ob * oc_block_ + ioc;
-                int inp_ic = iic;
-                in_data_t inp_v = (inp_ic < or_ic_ && inp_oc < or_oc_)
-                    ? _inp[ioc * or_ic_ * kh_ * kw_ + ih * kw_ + iw]
-                    : 0.f;
-                wspace_[(ih * w_alpha_ + j) * oc_block_ + ioc]
-                        += inp_v * g[j * r_ + iw];
-            }
+            parallel_nd(r_, w_alpha_, oc_block_,
+                [&](int ih, int j, int ioc) {
+                for (int iw = 0; iw < r_; ++iw) {
+                    int inp_oc = ob * oc_block_ + ioc;
+                    int inp_ic = iic;
+                    in_data_t inp_v = (inp_ic < or_ic_ && inp_oc < or_oc_)
+                        ? _inp[ioc * or_ic_ * kh_ * kw_ + ih * kw_ + iw]
+                        : 0.f;
+                    wspace_[(ih * w_alpha_ + j) * oc_block_ + ioc]
+                            += inp_v * g[j * r_ + iw];
+                }
+            });
 
-#pragma omp parallel for collapse(3)
-            for (int i = 0; i < w_alpha_; ++i)
-            for (int j = 0; j < w_alpha_; ++j)
-            for (int ioc = 0; ioc < oc_block_; ++ioc) {
+            parallel_nd(w_alpha_, w_alpha_, oc_block_,
+                [&](int i, int j, int ioc) {
                 float t = 0;
                 for (int k = 0; k < r_; ++k)
                     t += g[i * r_ + k]
@@ -194,11 +191,11 @@ private:
                         : scales[ob * oc_block_ + ioc];
                     _out[(i * w_alpha_ + j) * Z + ioc]
                             = qz_b0<in_data_t, out_data_t>()(
-                                    (in_data_t)t, scale, rmode);
+                                    (in_data_t)t, scale * adj_scale_, rmode);
                 } else {
                     _out[(i * w_alpha_ + j) * Z + ioc] = (out_data_t)t;
                 }
-            }
+            });
         }}
     }
 
@@ -214,9 +211,7 @@ private:
         int index = 0;
         for (int u_h = 0; u_h < w_alpha_; u_h++) {
         for (int u_w = 0; u_w < w_alpha_; u_w++) {
-#pragma omp parallel for collapse(2)
-            for (int ob = 0; ob < nb_oc_; ob++) {
-            for (int o = 0; o < oc_block_; o++) {
+            parallel_nd(nb_oc_, oc_block_, [&](int ob, int o) {
                 int u_h_shift = u_h * w_alpha_ * ic_ * oc_;
                 int u_w_shift = u_w * ic_ * oc_;
                 int u_h_shift_b = u_h * w_alpha_ * oc_;
@@ -244,87 +239,81 @@ private:
                             dst_bias[bias_offset] = 0;
                     }
                 }}
-            }}
+            });
             index++;
         }}
     }
 
     void reorder_to_aaOio(out_data_t *__restrict output) {
-#pragma omp parallel for collapse(3)
-        for (int u_h = 0; u_h < w_alpha_; u_h++) {
-        for (int u_w = 0; u_w < w_alpha_; u_w++) {
-        for (int ob = 0; ob < nb_oc_; ob++) {
-        for (int ib = 0; ib < nb_ic_; ib++) {
-        for (int i = 0; i < ic_block_; i++) {
-        for (int o = 0; o < oc_block_; o++) {
-            int src_offset = u_h * w_alpha_ * ic_ * oc_ + u_w * ic_ * oc_
+        parallel_nd(w_alpha_, w_alpha_, nb_oc_,
+            [&](int u_h, int u_w, int ob) {
+            for (int ib = 0; ib < nb_ic_; ib++) {
+            for (int i = 0; i < ic_block_; i++) {
+            for (int o = 0; o < oc_block_; o++) {
+                int src_offset = u_h * w_alpha_ * ic_ * oc_ + u_w * ic_ * oc_
                     + (ib * ic_block_ + i) * oc_ + (ob * oc_block_ + o);
 
-            int dst_offset
+                int dst_offset
                     = u_h * w_alpha_ * nb_oc_ * nb_ic_ * ic_block_ * oc_block_
                     + u_w * nb_oc_ * nb_ic_ * ic_block_ * oc_block_
                     + ob * nb_ic_ * ic_block_ * oc_block_
                     + ib * ic_block_ * oc_block_ + i * oc_block_ + o;
-            output[dst_offset] = tmp_wei_[src_offset];
-        }}}}}}
+                output[dst_offset] = tmp_wei_[src_offset];
+            }}}
+        });
     }
 
     void reorder_to_aaOBiOo(out_data_t *__restrict output) {
         int oc_chunks = nb_oc_ / oc2_block_;
-#pragma omp parallel for collapse(3)
-        for (int u_h = 0; u_h < w_alpha_; u_h++) {
-        for (int u_w = 0; u_w < w_alpha_; u_w++) {
-        for (int occ = 0; occ < oc_chunks; occ++) {
-        for (int ib = 0; ib < nb_ic_; ib++) {
-            out_data_t *__restrict wei_ptr = output
+
+        parallel_nd(w_alpha_, w_alpha_, oc_chunks,
+            [&](int u_h, int u_w, int occ) {
+            for (int ib = 0; ib < nb_ic_; ib++) {
+                out_data_t *__restrict wei_ptr = output
                     + (((u_h * w_alpha_ + u_w) * oc_chunks + occ) * nb_ic_ + ib)
-                            * oc2_block_ * ic_block_ * oc_block_;
-            int wei_offset = 0;
-            for (int i = 0; i < ic_block_; i++) {
-            for (int ob2 = 0; ob2 < oc2_block_; ob2++) {
-                for (int o = 0; o < oc_block_; o++) {
-                    int icp = ib * ic_block_ + i;
-                    int ocp =
+                    * oc2_block_ * ic_block_ * oc_block_;
+                int wei_offset = 0;
+                for (int i = 0; i < ic_block_; i++) {
+                for (int ob2 = 0; ob2 < oc2_block_; ob2++) {
+                    for (int o = 0; o < oc_block_; o++) {
+                        int icp = ib * ic_block_ + i;
+                        int ocp =
                             occ * oc2_block_ * oc_block_ + ob2 * oc_block_ + o;
 
-                    int src_offset = u_h * w_alpha_ * ic_ * oc_
-                                        + u_w * ic_ * oc_ + icp * oc_ + ocp;
-                    wei_ptr[wei_offset + o] = tmp_wei_[src_offset];
-                }
-                wei_offset += oc_block_;
-            }}
-        }}}}
+                        int src_offset = u_h * w_alpha_ * ic_ * oc_
+                            + u_w * ic_ * oc_ + icp * oc_ + ocp;
+                        wei_ptr[wei_offset + o] = tmp_wei_[src_offset];
+                    }
+                    wei_offset += oc_block_;
+                }}
+            }
+        });
     }
 
     void reorder_to_OBaaIBOIio(out_data_t *__restrict output) {
         int ic_chunks = nb_ic_ / ic2_block_;
         int oc_chunks = nb_oc_ / oc2_block_;
 
-#pragma omp parallel for collapse(3)
-        for (int occ = 0; occ < oc_chunks; occ++) {
-        for (int u_h = 0; u_h < w_alpha_; u_h++) {
-        for (int u_w = 0; u_w < w_alpha_; u_w++) {
-        for (int icc = 0; icc < ic_chunks; icc++) {
-        for (int ob = 0; ob < oc2_block_; ob++) {
-            int ocp = (occ * oc2_block_ + ob) * oc_block_;
-            for (int ib = 0; ib < ic2_block_; ib++) {
-            for (int i = 0; i < ic_block_; i++) {
-                int icp = (icc * ic2_block_ + ib) * ic_block_ + i;
+        parallel_nd(oc_chunks, w_alpha_, w_alpha_,
+            [&](int occ, int u_h, int u_w) {
+            for (int icc = 0; icc < ic_chunks; icc++) {
+            for (int ob = 0; ob < oc2_block_; ob++) {
+                int ocp = (occ * oc2_block_ + ob) * oc_block_;
+                for (int ib = 0; ib < ic2_block_; ib++) {
+                for (int i = 0; i < ic_block_; i++) {
+                    int icp = (icc * ic2_block_ + ib) * ic_block_ + i;
 
-                int src_offset = u_h * w_alpha_ * ic_ * oc_ + u_w * ic_ * oc_
-                        + icp * oc_ + ocp;
-                int wei_offset = ((((((occ * w_alpha_ + u_h) * w_alpha_ + u_w)
-                                                    * ic_chunks
-                                            + icc) * oc2_block_
-                                            + ob) * ic2_block_
-                                            + ib) * ic_block_
-                                            + i)
-                        * oc_block_;
-
-                for (int o = 0; o < oc_block_; o++)
-                    output[wei_offset + o] = tmp_wei_[src_offset + o];
+                    int src_offset = u_h * w_alpha_ * ic_ * oc_
+                        + u_w * ic_ * oc_ + icp * oc_ + ocp;
+                    int wei_offset
+                        = ((((((occ * w_alpha_ + u_h) * w_alpha_ + u_w)
+                            * ic_chunks + icc) * oc2_block_ + ob) * ic2_block_
+                            + ib) * ic_block_ + i) * oc_block_;
+                    for (int o = 0; o < oc_block_; o++)
+                        output[wei_offset + o] = tmp_wei_[src_offset + o];
+                }}
             }}
-        }}}}}
+        });
     }
 
     virtual void execute(event_t *e) {
@@ -349,6 +338,7 @@ private:
     int r_, w_alpha_;
     int ic_, oc_, or_ic_, or_oc_, kh_, kw_;
     int oc_block_, ic_block_, oc2_block_, ic2_block_;
+    float adj_scale_;
     int nb_oc_, nb_ic_;
     mkldnn_wino_memory_format_t wino_format_;
     in_data_t *__restrict wspace_;

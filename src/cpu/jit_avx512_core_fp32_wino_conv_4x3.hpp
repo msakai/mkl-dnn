@@ -69,7 +69,7 @@ struct winograd_scratchpad_avx512_core_t {
 
     private:
         inline void get_scratchpad_size_(const jit_conv_winograd_conf_t &jcp) {
-            nthreads_ = omp_get_max_threads();
+            nthreads_ = mkldnn_get_max_threads();
 
             U_sz_ = size_t(alpha) * alpha * jcp.ic * jcp.oc * sizeof(float);
             V_sz_ = size_t(alpha) * alpha * jcp.mb * jcp.ic
@@ -89,6 +89,8 @@ struct winograd_scratchpad_avx512_core_t {
                     * jcp.oc * sizeof(float);
                 break;
             case WSCHED_WEI_SDGtWo:
+                nthreads_ = nstl::min(mkldnn_get_max_threads(), jcp.tile_block);
+
                 U_sz_ = nthreads_
                     * (alpha * alpha * jcp.oc * (jcp.ic / jcp.nb_ic)
                       + jcp.ic * jcp.oc * jcp.kh * jcp.kw)
@@ -207,8 +209,9 @@ struct _jit_avx512_core_fp32_wino_conv_4x3_fwd_t
                                this->cdesc_().src_desc.data_type,
                                this->cdesc_().weights_desc.data_type,
                                this->cdesc_().dst_desc.data_type)
-                    && utils::implication(this->with_bias(), data_type::f32
-                                       == this->cdesc_().bias_desc.data_type);
+                    && IMPLICATION(this->with_bias(), data_type::f32
+                                       == this->cdesc_().bias_desc.data_type)
+                    && mkldnn_thr_syncable();
             if (!ok)
                 return status::unimplemented;
 
@@ -301,7 +304,8 @@ struct jit_avx512_core_fp32_wino_conv_4x3_bwd_data_t
                     && utils::everyone_is(data_type::f32,
                                this->desc()->diff_src_desc.data_type,
                                this->desc()->weights_desc.data_type,
-                               this->desc()->diff_dst_desc.data_type);
+                               this->desc()->diff_dst_desc.data_type)
+                    && mkldnn_thr_syncable();
             if (!ok)
                 return status::unimplemented;
 
@@ -393,7 +397,8 @@ struct jit_avx512_core_fp32_wino_conv_4x3_bwd_weights_t
                     && utils::everyone_is(data_type::f32,
                                this->desc()->src_desc.data_type,
                                this->desc()->diff_dst_desc.data_type,
-                               this->desc()->diff_weights_desc.data_type);
+                               this->desc()->diff_weights_desc.data_type)
+                    && mkldnn_thr_syncable();
             if (!ok)
                 return status::unimplemented;
 
