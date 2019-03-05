@@ -17,6 +17,7 @@
 #ifndef MKLDNN_TEST_COMMON_HPP
 #define MKLDNN_TEST_COMMON_HPP
 
+#include <limits>
 #include <numeric>
 #include <vector>
 #include <cmath>
@@ -29,6 +30,8 @@
 #endif
 
 #include "mkldnn.hpp"
+
+#include "src/common/mkldnn_thread.hpp"
 
 template <typename data_t> struct data_traits { };
 template <> struct data_traits<float> {
@@ -57,6 +60,16 @@ template <typename data_t> inline data_t out_round(float x,
 { return (data_t)(rmode == mkldnn_round_down ? floorf(x) : nearbyintf(x)); }
 template <> inline float out_round<float>(float x, mkldnn_round_mode_t rmode)
 { (void)rmode; return x; }
+
+template <typename data_t, typename out_t>
+out_t saturate(const out_t &x) {
+    out_t v = x;
+    if (v <= std::numeric_limits<data_t>::min())
+        v = std::numeric_limits<data_t>::min();
+    if (v > std::numeric_limits<data_t>::max())
+        v = std::numeric_limits<data_t>::max();
+    return v;
+}
 
 inline int right_padding(int i, int o, int k, int p, int s, int d = 0) {
     return (o - 1) * s + (k - 1) * (d + 1) - (p + i - 1);
@@ -215,6 +228,7 @@ inline mkldnn::memory::desc create_md(mkldnn::memory::dims dims,
         ndims = 1; break;
     case f::nc:
     case f::oi:
+    case f::io:
         ndims = 2; break;
     case f::nchw:
     case f::nhwc:
@@ -223,6 +237,9 @@ inline mkldnn::memory::desc create_md(mkldnn::memory::dims dims,
     case f::nChw16c:
     case f::oihw:
     case f::hwio:
+    case f::iohw:
+    case f::oIhw8i:
+    case f::oIhw16i:
     case f::OIhw8i8o:
     case f::OIhw16i16o:
     case f::OIhw8i16o2i:
@@ -236,13 +253,23 @@ inline mkldnn::memory::desc create_md(mkldnn::memory::dims dims,
         ndims = 4; break;
     case f::ncdhw:
     case f::ndhwc:
+    case f::nCdhw8c:
     case f::nCdhw16c:
+    case f::dhwio:
     case f::oidhw:
     case f::goihw:
     case f::hwigo:
+    case f::giohw:
+    case f::oIdhw8i:
+    case f::oIdhw16i:
+    case f::OIdhw8i8o:
+    case f::OIdhw16i16o:
+    case f::OIdhw8o8i:
+    case f::OIdhw16o16i:
     case f::gOhwi8o:
     case f::Goihw8g:
     case f::Goihw16g:
+    case f::gOhwi16o:
     case f::gOIhw8i8o:
     case f::gOIhw16i16o:
     case f::gOIhw8i16o2i:
@@ -252,6 +279,11 @@ inline mkldnn::memory::desc create_md(mkldnn::memory::dims dims,
     case f::gOIhw16o16i:
     case f::gIOhw16o16i:
         ndims = 5; break;
+    case f::gOIdhw8i8o:
+    case f::gOIdhw16i16o:
+    case f::gOIdhw8o8i:
+    case f::gOIdhw16o16i:
+    case f::gOdhwi16o:
     case f::goidhw:
         ndims = 6; break;
     case f::format_undef:
@@ -292,27 +324,26 @@ template <typename data_t>
 static void fill_data(const size_t size, data_t *data, data_t mean,
         data_t deviation, double sparsity = 1.)
 {
-#   pragma omp parallel for schedule(static)
-    for (ptrdiff_t n = 0; n < (ptrdiff_t)size; n++) {
-        data[n] = set_value<data_t>(n, mean, deviation, sparsity);
-    }
+    mkldnn::impl::parallel_nd((ptrdiff_t)size, [&](ptrdiff_t n) {
+            data[n] = set_value<data_t>(n, mean, deviation, sparsity);
+    });
 }
 
 template <typename data_t>
 static void fill_data(const size_t size, data_t *data, double sparsity = 1.,
         bool init_negs = false)
 {
-#   pragma omp parallel for schedule(static)
-    for (ptrdiff_t n = 0; n < (ptrdiff_t)size; n++) {
+    mkldnn::impl::parallel_nd((ptrdiff_t)size, [&](ptrdiff_t n) {
         data[n] = set_value<data_t>(n, data_t(1), data_t(2e-1), sparsity);
 
         if (init_negs && n%4 == 0U)
             data[n] = static_cast<data_t>(-data[n]); // weird for unsigned types!
-    }
+    });
 }
 
 template <typename data_t>
-static void compare_data(mkldnn::memory& ref, mkldnn::memory& dst)
+static void compare_data(mkldnn::memory& ref, mkldnn::memory& dst,
+        data_t threshold = (data_t)1e-4)
 {
     using data_type = mkldnn::memory::data_type;
 
@@ -341,20 +372,19 @@ static void compare_data(mkldnn::memory& ref, mkldnn::memory& dst)
     data_t *ref_data = (data_t *)ref.get_data_handle();
     data_t *dst_data = (data_t *)dst.get_data_handle();
 
-#   pragma omp parallel for schedule(static)
-    for (ptrdiff_t i = 0; i < num; ++i) {
+    mkldnn::impl::parallel_nd(num, [&](ptrdiff_t i) {
         data_t ref = ref_data[map_index(ref_desc, i)];
         data_t got = dst_data[map_index(dst_desc, i)];
 
         if (data_traits<data_t>::data_type == data_type::f32) {
             data_t diff = got - ref;
-            data_t e = (std::abs(ref) > (data_t)1e-4) ? diff / ref : diff;
-            EXPECT_NEAR(e, (data_t)0.0, (data_t)1e-4)
+            data_t e = (std::abs(ref) > threshold) ? diff / ref : diff;
+            EXPECT_NEAR(e, (data_t)0.0, threshold)
                 << "Index: " << i << " Total: " << num;
         } else {
             EXPECT_EQ(ref, got) << "Index: " << i << " Total: " << num;
         }
-    }
+    });
 }
 
 inline const char *query_impl_info(const_mkldnn_primitive_desc_t pd) {
@@ -447,7 +477,19 @@ struct test_convolution_formats_t {
 struct test_convolution_params_t {
     const mkldnn::engine::kind engine_kind;
     mkldnn::algorithm aalgorithm;
-    const float relu_negative_slope;
+    test_convolution_formats_t formats;
+    test_convolution_attr_t attr;
+    test_convolution_sizes_t sizes;
+    bool expect_to_fail;
+    mkldnn_status_t expected_status;
+};
+
+struct test_convolution_eltwise_params_t {
+    const mkldnn::algorithm alg;
+    const mkldnn::engine::kind engine_kind;
+    mkldnn::algorithm aalgorithm;
+    const float eltwise_alpha;
+    const float eltwise_beta;
     test_convolution_formats_t formats;
     test_convolution_attr_t attr;
     test_convolution_sizes_t sizes;
@@ -456,7 +498,7 @@ struct test_convolution_params_t {
 };
 
 template<typename F> bool catch_expected_failures(const F &f,
-        bool expect_to_fail, mkldnn_status_t expected_status)
+        bool expect_to_fail, mkldnn_status_t expected_status, bool ignore_unimplemented = true)
 {
     try {
         f();
@@ -465,7 +507,7 @@ template<typename F> bool catch_expected_failures(const F &f,
         // not match.
         if (!(expect_to_fail) || e.status != (expected_status)) {
             // Ignore unimplemented
-            if (e.status == mkldnn_unimplemented)
+            if ( ignore_unimplemented && (e.status == mkldnn_unimplemented))
                 return true;
             else
                 throw e;
