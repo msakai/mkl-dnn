@@ -26,6 +26,7 @@
 namespace reorder {
 
 /* global driver parameters */
+alg_t alg = ALG_REF;
 attr_t attr;
 bool allow_unimpl = false;
 bool both_dir_dt = false;
@@ -38,6 +39,7 @@ std::vector<dims_t> v_dims;
 std::vector<float> v_def_scale;
 
 void reset_parameters() {
+    alg = ALG_REF;
     attr = attr_t();
     allow_unimpl = false;
     both_dir_dt = false;
@@ -67,10 +69,10 @@ void check(const prb_t *p) {
 void run() {
     for (auto &idt: v_idt)
     for (auto &odt: v_odt)
-    for (int swap_dt = 0; swap_dt < 1 + both_dir_dt * (idt != odt); ++swap_dt)
+    for (int swap_dt = 0; swap_dt < (both_dir_dt && idt != odt ? 2 : 1); ++swap_dt)
     for (auto &ifmt: v_ifmt)
     for (auto &ofmt: v_ofmt)
-    for (int swap_fmt = 0; swap_fmt < 1 + both_dir_fmt * (ifmt != ofmt); ++swap_fmt)
+    for (int swap_fmt = 0; swap_fmt < (both_dir_fmt && ifmt != ofmt ? 2 : 1); ++swap_fmt)
     for (auto &dims: v_dims)
     {
         reorder_conf_t reorder_conf{dims,
@@ -84,7 +86,7 @@ void run() {
         auto &v_scale = attr.oscale.scale == 0 ? v_def_scale : v_attr_scale;
 
         for (auto &scale: v_scale) {
-            const prb_t p(reorder_conf, iconf, oconf, attr, scale);
+            const prb_t p(reorder_conf, iconf, oconf, attr, alg, scale);
             check(&p);
         }
     }
@@ -97,6 +99,8 @@ int bench(int argc, char **argv, bool main_bench) {
     for (int arg = 0; arg < argc; ++arg) {
         if (!strncmp("--batch=", argv[arg], 8))
             SAFE(batch(argv[arg] + 8, bench), CRIT);
+        else if (!strncmp("--alg=", argv[arg], 6))
+            alg = str2alg(argv[arg] + 6);
         else if (!strncmp("--idt=", argv[arg], 6))
             read_csv(argv[arg] + 6, [&]() { v_idt.clear(); },
                     [&](const char *str) { v_idt.push_back(str2dt(str)); });
@@ -138,8 +142,8 @@ int bench(int argc, char **argv, bool main_bench) {
             perf_template = argv[arg] + 16;
         else if (!strcmp("--reset", argv[arg]))
             reset_parameters();
-        else if (!strncmp("--mode=", argv[0], 7))
-            bench_mode = str2bench_mode(argv[0] + 7);
+        else if (!strncmp("--mode=", argv[arg], 7))
+            bench_mode = str2bench_mode(argv[arg] + 7);
         else if (!strncmp("-v", argv[arg], 2))
             verbose = atoi(argv[arg] + 2);
         else if (!strncmp("--verbose=", argv[arg], 10))

@@ -28,138 +28,127 @@ namespace cpu {
 
 typedef float data_t;
 
-void ref_deconvolution_fwd_t::compute_fwd_bias() {
+void ref_deconvolution_fwd_t::compute_fwd_bias() const {
     auto bias = reinterpret_cast<const data_t *>(this->input_memory(2));
     auto dst = reinterpret_cast<data_t *>(this->memory());
-    const memory_desc_wrapper dst_d(conf_.dst_pd());
+    const memory_desc_wrapper dst_d(pd()->dst_pd());
 
-    const int G = conf_.G();
-    const int MB = conf_.MB();
-    const int OH = conf_.OH();
-    const int OW = conf_.OW();
-    const int OD = conf_.OD();
-    const int OC = conf_.OC() / G;
-    const int ndims = conf_.desc()->src_desc.ndims;
+    const int G = pd()->G();
+    const int MB = pd()->MB();
+    const int OH = pd()->OH();
+    const int OW = pd()->OW();
+    const int OD = pd()->OD();
+    const int OC = pd()->OC() / G;
+    const int ndims = pd()->desc()->src_desc.ndims;
 
-#   pragma omp parallel for collapse(6) schedule(static)
-    for (int mb = 0; mb < MB; ++mb) {
-        for (int g = 0; g < G; ++g) {
-            for (int oc = 0; oc < OC; ++oc) {
-                for (int od = 0; od < OD; ++od) {
-                    for (int oh = 0; oh < OH; ++oh) {
-                        for (int ow = 0; ow < OW; ++ow) {
-                            auto b = bias[g * OC + oc];
-                            if (ndims == 5)
-                                dst[dst_d.off(mb, g*OC + oc, od, oh, ow)] += b;
-                            else
-                                dst[dst_d.off(mb, g*OC + oc, oh, ow)] += b;
-                        }
-                    }
-                }
+    parallel_nd(MB, G, OC, OD, OH, OW,
+        [&](int mb, int g, int oc, int od, int oh, int ow) {
+            auto b = bias[g * OC + oc];
+            switch (ndims) {
+            case 5: dst[dst_d.off(mb, g * OC + oc, od, oh, ow)] += b; break;
+            case 4: dst[dst_d.off(mb, g * OC + oc, oh, ow)] += b; break;
+            case 3: dst[dst_d.off(mb, g * OC + oc, ow)] += b; break;
+            default: assert(!"invalid dimension size");
             }
-        }
-    }
+    });
 }
 
-void ref_deconvolution_fwd_t::compute_fwd_bias_ncdhw() {
+void ref_deconvolution_fwd_t::compute_fwd_bias_ncdhw() const {
     auto bias = reinterpret_cast<const data_t *>(this->input_memory(2));
     auto dst = reinterpret_cast<data_t *>(this->memory());
 
-    const memory_desc_wrapper dst_d(conf_.dst_pd());
+    const memory_desc_wrapper dst_d(pd()->dst_pd());
 
-    const int MB = conf_.MB();
-    const int OC = conf_.OC();
-    const int SP = conf_.OW()*conf_.OH()*conf_.OD();
+    const int MB = pd()->MB();
+    const int OC = pd()->OC();
+    const int SP = pd()->OW()*pd()->OH()*pd()->OD();
 
-#   pragma omp parallel for collapse(2) schedule(static)
-    for (int mb = 0; mb < MB; ++mb) {
-        for (int oc = 0; oc < OC; ++oc) {
-            PRAGMA_OMP_SIMD()
-            for (int sp = 0; sp < SP; ++sp) {
-                auto offset = (size_t)(mb * OC + oc) * SP + sp;
-                dst[offset] += bias[oc];
-            }
+    parallel_nd(MB, OC, [&](int mb, int oc) {
+        PRAGMA_OMP_SIMD()
+        for (int sp = 0; sp < SP; ++sp) {
+            auto offset = (size_t)(mb * OC + oc) * SP + sp;
+            dst[offset] += bias[oc];
         }
-    }
+    });
 }
 
 template <int blksize>
-void ref_deconvolution_fwd_t::compute_fwd_bias_nCdhwXc() {
+void ref_deconvolution_fwd_t::compute_fwd_bias_nCdhwXc() const {
     auto bias = reinterpret_cast<const data_t *>(this->input_memory(2));
     auto dst = reinterpret_cast<data_t *>(this->memory());
 
-    const memory_desc_wrapper dst_d(conf_.dst_pd());
+    const memory_desc_wrapper dst_d(pd()->dst_pd());
 
-    const int MB = conf_.MB();
-    const int OC = conf_.OC();
-    const int SP = conf_.OW() * conf_.OH() * conf_.OD();
+    const int MB = pd()->MB();
+    const int OC = pd()->OC();
+    const int SP = pd()->OW() * pd()->OH() * pd()->OD();
 
     const ptrdiff_t stride_mb = dst_d.blocking_desc().strides[0][0];
 
-#   pragma omp parallel for collapse(3) schedule(static)
-    for (int mb = 0; mb < MB; ++mb) {
-        for (int oc = 0; oc < OC; oc += blksize) {
-            for (int sp = 0; sp < SP; ++sp) {
-                auto offset = mb * stride_mb + oc * SP + sp * blksize;
+    parallel_nd(MB, utils::div_up(OC, blksize), SP,
+        [&](int mb, int oc_blk, int sp) {
+        int oc = oc_blk * blksize;
+        auto offset = mb * stride_mb + oc * SP + sp * blksize;
+        const int blk = nstl::min(blksize, OC - oc);
 
-                const int blk = nstl::min(blksize, OC - oc);
-
-                PRAGMA_OMP_SIMD()
-                for (int i = 0; i < blk; ++i)
-                    dst[offset + i] += bias[oc + i];
-            }
-        }
-    }
+        PRAGMA_OMP_SIMD()
+        for (int i = 0; i < blk; ++i)
+            dst[offset + i] += bias[oc + i];
+    });
 }
 
-void ref_deconvolution_bwd_weights_t::compute_bwd_bias() {
+void ref_deconvolution_bwd_weights_t::compute_bwd_bias() const {
     auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(1));
     auto diff_bias = reinterpret_cast<data_t *>(this->memory(1));
-    const memory_desc_wrapper diff_dst_d(conf_.diff_dst_pd());
+    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_pd());
 
-    const int G = conf_.G();
-    const int MB = conf_.MB();
-    const int OH = conf_.OH();
-    const int OW = conf_.OW();
-    const int OC = conf_.OC() / G;
-    const int OD = conf_.OD();
-    const int ndims = conf_.desc()->src_desc.ndims;
+    const int G = pd()->G();
+    const int MB = pd()->MB();
+    const int OH = pd()->OH();
+    const int OW = pd()->OW();
+    const int OC = pd()->OC() / G;
+    const int OD = pd()->OD();
+    const int ndims = pd()->desc()->src_desc.ndims;
 
-#   pragma omp parallel for collapse(2) schedule(static)
-    for (int g = 0; g < G; ++g) {
-        for (int oc = 0; oc < OC; ++oc) {
-            data_t db = 0;
-            for (int mb = 0; mb < MB; ++mb) {
-                for (int od = 0; od < OD; ++od) {
-                    for (int oh = 0; oh < OH; ++oh) {
-                        for (int ow = 0; ow < OW; ++ow) {
-                            if (ndims == 5)
-                                db += diff_dst[
-                                    diff_dst_d.off(mb, g*OC + oc, od, oh, ow)];
-                            else
-                                db += diff_dst[
-                                    diff_dst_d.off(mb, g*OC + oc, oh, ow)];
+    parallel_nd(G, OC, [&](int g, int oc) {
+        data_t db = 0;
+        for (int mb = 0; mb < MB; ++mb) {
+            for (int od = 0; od < OD; ++od) {
+                for (int oh = 0; oh < OH; ++oh) {
+                    for (int ow = 0; ow < OW; ++ow) {
+                        switch (ndims) {
+                        case 5:
+                            db += diff_dst[diff_dst_d.off(
+                                    mb, g * OC + oc, od, oh, ow)];
+                            break;
+                        case 4:
+                            db += diff_dst[diff_dst_d.off(
+                                    mb, g * OC + oc, oh, ow)];
+                            break;
+                        case 3:
+                            db += diff_dst[diff_dst_d.off(mb, g * OC + oc, ow)];
+                            break;
+                        default: assert(!"invalid dimension size");
                         }
                     }
                 }
             }
-            diff_bias[g * OC + oc] = db;
         }
-    }
+        diff_bias[g * OC + oc] = db;
+    });
 }
 
-void ref_deconvolution_bwd_weights_t::compute_bwd_bias_ncdhw() {
+void ref_deconvolution_bwd_weights_t::compute_bwd_bias_ncdhw() const {
     auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(1));
     auto diff_bias = reinterpret_cast<data_t *>(this->memory(1));
 
-    const memory_desc_wrapper diff_dst_d(conf_.diff_dst_pd());
+    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_pd());
 
-    const int OC = conf_.OC();
-    const int MB = conf_.MB();
-    const int SP = conf_.OH()*conf_.OW()*conf_.OD();
+    const int OC = pd()->OC();
+    const int MB = pd()->MB();
+    const int SP = pd()->OH()*pd()->OW()*pd()->OD();
 
-#   pragma omp parallel for schedule(static)
-    for (int oc = 0; oc < OC; ++oc) {
+    parallel_nd(OC, [&](int oc) {
         data_t db = 0;
         for (int mb = 0; mb < MB; ++mb) {
             PRAGMA_OMP_SIMD()
@@ -169,29 +158,28 @@ void ref_deconvolution_bwd_weights_t::compute_bwd_bias_ncdhw() {
             }
         }
         diff_bias[oc] = db;
-    }
+    });
 }
 
 template <int blksize>
-void ref_deconvolution_bwd_weights_t::compute_bwd_bias_nCdhwXc() {
+void ref_deconvolution_bwd_weights_t::compute_bwd_bias_nCdhwXc() const {
     auto diff_dst = reinterpret_cast<const data_t *>(this->input_memory(1));
     auto diff_bias = reinterpret_cast<data_t *>(this->memory(1));
 
-    const memory_desc_wrapper diff_dst_d(conf_.diff_dst_pd());
+    const memory_desc_wrapper diff_dst_d(pd()->diff_dst_pd());
 
-    const int OC = conf_.OC();
-    const int MB = conf_.MB();
-    const int SP = conf_.OH() * conf_.OW() * conf_.OD();
+    const int OC = pd()->OC();
+    const int MB = pd()->MB();
+    const int SP = pd()->OH() * pd()->OW() * pd()->OD();
 
     const ptrdiff_t stride_mb = diff_dst_d.blocking_desc().strides[0][0];
 
-#   pragma omp parallel for schedule(static)
-    for (int oc = 0; oc < OC; oc += blksize) {
+    parallel_nd(utils::div_up(OC, blksize), [&](int ocb) {
         data_t db[blksize] = {0};
 
         for (int mb = 0; mb < MB; ++mb) {
             for (int sp = 0; sp < SP; ++sp) {
-                auto offset = mb * stride_mb + oc * SP + sp * blksize;
+                auto offset = mb * stride_mb + (ocb * SP + sp) * blksize;
 
                 PRAGMA_OMP_SIMD()
                 for (int i = 0; i < blksize; ++i)
@@ -199,18 +187,18 @@ void ref_deconvolution_bwd_weights_t::compute_bwd_bias_nCdhwXc() {
             }
         }
 
-        const int blk = nstl::min(blksize, OC - oc);
+        const int blk = nstl::min(blksize, OC - ocb * blksize);
 
         PRAGMA_OMP_SIMD()
         for (int i = 0; i < blk; ++i)
-            diff_bias[oc + i] = db[i];
-    }
+            diff_bias[ocb * blksize + i] = db[i];
+    });
 }
 
-template void ref_deconvolution_fwd_t::compute_fwd_bias_nCdhwXc<8>();
-template void ref_deconvolution_fwd_t::compute_fwd_bias_nCdhwXc<16>();
-template void ref_deconvolution_bwd_weights_t::compute_bwd_bias_nCdhwXc<8>();
-template void ref_deconvolution_bwd_weights_t::compute_bwd_bias_nCdhwXc<16>();
+template void ref_deconvolution_fwd_t::compute_fwd_bias_nCdhwXc<8>() const;
+template void ref_deconvolution_fwd_t::compute_fwd_bias_nCdhwXc<16>() const;
+template void ref_deconvolution_bwd_weights_t::compute_bwd_bias_nCdhwXc<8>() const;
+template void ref_deconvolution_bwd_weights_t::compute_bwd_bias_nCdhwXc<16>() const;
 
 }
 }

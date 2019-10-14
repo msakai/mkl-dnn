@@ -46,15 +46,18 @@ struct ref_batch_normalization_fwd_t: public cpu_primitive_t {
             bool ok = true
                 && utils::one_of(desc()->prop_kind, forward_training,
                         forward_inference)
-                && utils::everyone_is(data_type, desc()->data_desc.data_type,
-                        desc()->data_scaleshift_desc.data_type)
+                && desc()->data_desc.data_type == data_type
+                && desc()->data_scaleshift_desc.data_type == data_type::f32
                 && (attr()->has_default_values() || this->with_relu_post_op());
             if (!ok) return status::unimplemented;
+
+            if (desc()->data_desc.data_type == data_type::s8 && !stats_is_src())
+                return status::unimplemented;
 
             if (stats_is_src() || is_training()) {
                 memory_desc_t stats_d;
                 dims_t stats_dims = { C() };
-                mkldnn_memory_desc_init(&stats_d, 1, stats_dims, data_type,
+                mkldnn_memory_desc_init(&stats_d, 1, stats_dims, data_type::f32,
                         memory_format::x);
                 mean_pd_ = cpu_memory_t::pd_t(engine_, &stats_d);
                 variance_pd_ = cpu_memory_t::pd_t(engine_, &stats_d);
@@ -67,19 +70,20 @@ struct ref_batch_normalization_fwd_t: public cpu_primitive_t {
         }
     };
 
-    ref_batch_normalization_fwd_t(const pd_t *pd, const input_vector &inputs,
+    ref_batch_normalization_fwd_t(const pd_t *apd, const input_vector &inputs,
             const output_vector &outputs)
-        : cpu_primitive_t(&conf_, inputs, outputs), conf_(*pd) {}
+        : cpu_primitive_t(apd, inputs, outputs) {}
+
     typedef typename prec_traits<data_type>::type data_t;
 
-    virtual void execute(event_t *e) {
+    virtual void execute(event_t *e) const {
         execute_forward();
         e->set_state(event_t::ready);
     }
 
 private:
-    void execute_forward();
-    pd_t conf_;
+    void execute_forward() const;
+    const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
 };
 
 template <impl::data_type_t data_type>
@@ -132,19 +136,19 @@ struct ref_batch_normalization_bwd_t: public cpu_primitive_t {
         }
     };
 
-    ref_batch_normalization_bwd_t(const pd_t *pd, const input_vector &inputs,
+    ref_batch_normalization_bwd_t(const pd_t *apd, const input_vector &inputs,
             const output_vector &outputs)
-        : cpu_primitive_t(&conf_, inputs, outputs), conf_(*pd) {}
+        : cpu_primitive_t(apd, inputs, outputs) {}
     typedef typename prec_traits<data_type>::type data_t;
 
-    virtual void execute(event_t *e) {
+    virtual void execute(event_t *e) const {
         execute_backward();
         e->set_state(event_t::ready);
     }
 
 private:
-    void execute_backward();
-    pd_t conf_;
+    void execute_backward() const;
+    const pd_t *pd() const { return (const pd_t *)primitive_t::pd(); }
 };
 
 }

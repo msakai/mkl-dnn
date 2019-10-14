@@ -67,8 +67,19 @@ status_t cvt_mem_desc_to_layout_desc(const memory_desc_t &md_,
     switch (md.format()) {
     case memory_format::undef:
     case memory_format::any:
+    case hwio_s8s8:
+    case hwigo_s8s8:
+    case gOIhw4o4i_s8s8:
+    case gOIhw2i8o4i_s8s8:
+    case gOIw4i16o4i_s8s8:
+    case OIw4i16o4i_s8s8:
+    case gOIhw4i16o4i_s8s8:
+    case OIhw4i16o4i_s8s8:
+    case Goihw16g_s8s8:
+    case Goiw16g_s8s8:
     case wino_fmt:
         return invalid_arguments;
+    case OIw4i16o4i:
     case OIhw4i16o4i:
         P(0, bd.padding_dims[0] / 16, bd.strides[0][0]);
         P(0, 16, 4);
@@ -76,8 +87,10 @@ status_t cvt_mem_desc_to_layout_desc(const memory_desc_t &md_,
         P(1, 4, 16*4);
         P(1, 4, 1);
         P(2, bd.padding_dims[2], bd.strides[0][2]);
-        P(3, bd.padding_dims[3], bd.strides[0][3]);
+        if (md.format() == OIhw4i16o4i)
+            P(3, bd.padding_dims[3], bd.strides[0][3]);
         return success;
+    case OIw8i16o2i:
     case OIhw8i16o2i:
     case OIdhw8i16o2i:
         P(0, bd.padding_dims[0] / 16, bd.strides[0][0]);
@@ -86,10 +99,12 @@ status_t cvt_mem_desc_to_layout_desc(const memory_desc_t &md_,
         P(1, 8, 16*2);
         P(1, 2, 1);
         P(2, bd.padding_dims[2], bd.strides[0][2]);
-        P(3, bd.padding_dims[3], bd.strides[0][3]);
+        if (md.format() == OIhw8i16o2i || md.format() == OIdhw8i16o2i)
+            P(3, bd.padding_dims[3], bd.strides[0][3]);
         if (md.format() == OIdhw8i16o2i)
             P(4, bd.padding_dims[4], bd.strides[0][4]);
         return success;
+    case OIw8o16i2o:
     case OIhw8o16i2o:
         P(0, bd.padding_dims[0] / 16, bd.strides[0][0]);
         P(0, 8, 16*2);
@@ -97,8 +112,20 @@ status_t cvt_mem_desc_to_layout_desc(const memory_desc_t &md_,
         P(1, bd.padding_dims[1] / 16, bd.strides[0][1]);
         P(1, 16, 2);
         P(2, bd.padding_dims[2], bd.strides[0][2]);
-        P(3, bd.padding_dims[3], bd.strides[0][3]);
+        if (md.format() == OIhw8o16i2o)
+            P(3, bd.padding_dims[3], bd.strides[0][3]);
         return success;
+    case gOIhw2i8o4i:
+        P(0, bd.padding_dims[0], bd.strides[0][0]);
+        P(1, bd.padding_dims[1] / 8, bd.strides[0][1]);
+        P(1, 8, 4);
+        P(2, bd.padding_dims[2] / 8, bd.strides[0][2]);
+        P(2, 2, 8*4);
+        P(2, 4, 1);
+        P(3, bd.padding_dims[3], bd.strides[0][3]);
+        P(4, bd.padding_dims[4], bd.strides[0][4]);
+        return success;
+    case gOIw4i16o4i:
     case gOIhw4i16o4i:
         P(0, bd.padding_dims[0], bd.strides[0][0]);
         P(1, bd.padding_dims[1] / 16, bd.strides[0][1]);
@@ -107,8 +134,10 @@ status_t cvt_mem_desc_to_layout_desc(const memory_desc_t &md_,
         P(2, 4, 16*4);
         P(2, 4, 1);
         P(3, bd.padding_dims[3], bd.strides[0][3]);
-        P(4, bd.padding_dims[4], bd.strides[0][4]);
+        if (md.format() == gOIhw4i16o4i)
+            P(4, bd.padding_dims[4], bd.strides[0][4]);
         return success;
+    case gOIw8i16o2i:
     case gOIhw8i16o2i:
     case gOIdhw8i16o2i:
         P(0, bd.padding_dims[0], bd.strides[0][0]);
@@ -118,10 +147,12 @@ status_t cvt_mem_desc_to_layout_desc(const memory_desc_t &md_,
         P(2, 8, 16*2);
         P(2, 2, 1);
         P(3, bd.padding_dims[3], bd.strides[0][3]);
-        P(4, bd.padding_dims[4], bd.strides[0][4]);
-        if (md.format() == OIdhw8i16o2i)
+        if (md.format() == gOIhw8i16o2i || md.format() == gOIdhw8i16o2i)
+            P(4, bd.padding_dims[4], bd.strides[0][4]);
+        if (md.format() == gOIdhw8i16o2i)
             P(5, bd.padding_dims[5], bd.strides[0][5]);
         return success;
+    case gOIw8o16i2o:
     case gOIhw8o16i2o:
         P(0, bd.padding_dims[0], bd.strides[0][0]);
         P(1, bd.padding_dims[1] / 16, bd.strides[0][1]);
@@ -130,7 +161,8 @@ status_t cvt_mem_desc_to_layout_desc(const memory_desc_t &md_,
         P(2, bd.padding_dims[2] / 16, bd.strides[0][2]);
         P(2, 16, 2);
         P(3, bd.padding_dims[3], bd.strides[0][3]);
-        P(4, bd.padding_dims[4], bd.strides[0][4]);
+        if (md.format() == gOIhw8o16i2o)
+            P(4, bd.padding_dims[4], bd.strides[0][4]);
         return success;
     default: break;
     }
@@ -150,7 +182,12 @@ status_t prb_init(prb_t &p, const memory_desc_t &imd, const memory_desc_t &omd,
     auto im_d = memory_desc_wrapper(imd);
     auto om_d = memory_desc_wrapper(omd);
 
-    if (!im_d.is_blocking_desc() || !om_d.is_blocking_desc())
+    bool ok = true
+        && im_d.is_blocking_desc()
+        && om_d.is_blocking_desc()
+        && !im_d.has_zero_dim()
+        && !om_d.has_zero_dim();
+    if (!ok)
         return unimplemented;
 
     /* padding_dim consistency check */

@@ -19,9 +19,13 @@
 #include <malloc.h>
 #include <windows.h>
 #endif
-#include "xmmintrin.h"
 
+#include "mkldnn.h"
 #include "utils.hpp"
+
+#if defined(MKLDNN_X86_64)
+#include "xmmintrin.h"
+#endif
 
 namespace mkldnn {
 namespace impl {
@@ -58,9 +62,9 @@ int mkldnn_getenv(char *value, const char *name, int length) {
 }
 
 static bool dump_jit_code;
+static bool initialized;
 
 bool mkldnn_jit_dump() {
-    static bool initialized = false;
     if (!initialized) {
         const int len = 2;
         char env_dump[len] = {0};
@@ -81,9 +85,10 @@ FILE *mkldnn_fopen(const char *filename, const char *mode) {
 #endif
 }
 
-THREAD_LOCAL unsigned int mxcsr_save;
+thread_local unsigned int mxcsr_save;
 
 void set_rnd_mode(round_mode_t rnd_mode) {
+#if defined(MKLDNN_X86_64)
     mxcsr_save = _mm_getcsr();
     unsigned int mxcsr = mxcsr_save & ~(3u << 13);
     switch (rnd_mode) {
@@ -92,10 +97,15 @@ void set_rnd_mode(round_mode_t rnd_mode) {
     default: assert(!"unreachable");
     }
     if (mxcsr != mxcsr_save) _mm_setcsr(mxcsr);
+#else
+    UNUSED(rnd_mode);
+#endif
 }
 
 void restore_rnd_mode() {
+#if defined(MKLDNN_X86_64)
     _mm_setcsr(mxcsr_save);
+#endif
 }
 
 void *malloc(size_t size, int alignment) {
@@ -119,5 +129,22 @@ void free(void *p) {
 #endif
 }
 
+// Atomic operations
+int32_t mkldnn_fetch_and_add(int32_t *dst, int32_t val) {
+#ifdef _WIN32
+    return InterlockedExchangeAdd(reinterpret_cast<long*>(dst), val);
+#else
+    return __sync_fetch_and_add(dst, val);
+#endif
 }
+
+}
+}
+
+mkldnn_status_t mkldnn_set_jit_dump(int dump) {
+    using namespace mkldnn::impl::status;
+    if (dump < 0) return invalid_arguments;
+    mkldnn::impl::dump_jit_code = dump;
+    mkldnn::impl::initialized = true;
+    return success;
 }

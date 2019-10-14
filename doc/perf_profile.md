@@ -26,19 +26,22 @@ This will produce the following output (the line break was added to fit into
 the page width):
 
 ```
-    mkldnn_verbose,exec,reorder,simple:any,undef,in:f32_nchw out:f32_nChw8c,num:1,2x16x7x7,0.484863
-    mkldnn_verbose,exec,reorder,simple:any,undef,in:f32_goihw out:f32_gOIhw8i8o,num:1,1x16x16x5x5,0.494141
-    mkldnn_verbose,exec,reorder,simple:any,undef,in:f32_nchw out:f32_nChw8c,num:1,2x16x7x7,0.478027
-    mkldnn_verbose,exec,reorder,simple:any,undef,in:f32_x out:f32_x,num:1,16,0.219971
-    mkldnn_verbose,exec,convolution,jit:avx2,forward_inference,fsrc:nChw8c fwei:gOIhw8i8o fbia:x \
-        fdst:nChw8c,alg:convolution_direct,mb2_g1ic16oc16_ih7oh7kh5sh1dh0ph2_iw7ow7kw5sw1dw0pw2,0.0170898
-    mkldnn_verbose,exec,reorder,simple:any,undef,in:f32_nChw8c out:f32_nchw,num:1,2x16x7x7,0.488037
-    mkldnn_verbose,exec,reorder,simple:any,undef,in:f32_nChw8c out:f32_nchw,num:1,2x16x7x7,0.00512695
+    mkldnn_verbose,info,Intel(R) MKL-DNN v0.18.0 (Git Hash 4cfed5bf82f1339d7c8c7f622fda02dc00ec8ad8), \
+        Intel(R) Advanced Vector Extensions 2 (Intel(R) AVX2)
+    mkldnn_verbose,exec,reorder,jit:uni,undef,in:f32_nchw out:f32_nChw8c,num:1,2x16x7x7,0.529053
+    mkldnn_verbose,exec,reorder,jit:uni,undef,in:f32_oihw out:f32_OIhw8i8o,num:1,16x16x5x5,0.98999
+    mkldnn_verbose,exec,reorder,jit:uni,undef,in:f32_nchw out:f32_nChw8c,num:1,2x16x7x7,0.453125
+    mkldnn_verbose,exec,reorder,simple:any,undef,in:f32_x out:f32_x,num:1,16,0.388916
+    mkldnn_verbose,exec,convolution,jit:avx2,forward_training,fsrc:nChw8c fwei:OIhw8i8o fbia:x \
+        fdst:nChw8c,alg:convolution_direct,mb2_ic16oc16_ih7oh7kh5sh1dh0ph2_iw7ow7kw5sw1dw0pw2,0.0241699
+    mkldnn_verbose,exec,reorder,jit:uni,undef,in:f32_nChw8c out:f32_nchw,num:1,2x16x7x7,0.469971
     0:PASSED __REPRO: ic16ih7oc16oh7kh5ph2nwip
     tests:1 passed:1 skipped:0 mistrusted:0 unimplemented:0 failed:0
 ```
 
-Each line with verbose information is formatted as a comma-separated list
+The first line of verbose information contains the build version and git hash,
+if available, as well as the supported instruction set architechture. Each
+subsequent line of verbose information is formatted as a comma-separated list
 containing:
 - `mkldnn_verbose`
 - `stage`, e.g. `create` or `exec`
@@ -90,39 +93,42 @@ To dump JIT-kernels set MKLDNN_JIT_DUMP environment variable to `1`. For example
 ```
 
 This will produce the following output files:
-    mkldnn_dump_jit_avx2_conv_fwd_kernel_f32.0.bin
-    mkldnn_dump_jit_uni_lrn_fwd_kernel_f32.2.bin
+
+    mkldnn_dump_jit_uni_reorder_kernel_f32.0.bin
+    mkldnn_dump_jit_avx2_conv_fwd_kernel_f32.1.bin
+    mkldnn_dump_jit_uni_relu_kernel_f32.2.bin
     mkldnn_dump_jit_uni_lrn_fwd_kernel_f32.3.bin
     mkldnn_dump_jit_uni_lrn_fwd_kernel_f32.4.bin
-    mkldnn_dump_jit_uni_pool_kernel_f32.5.bin
-    mkldnn_dump_jit_uni_relu_kernel_f32.1.bin
-    
+    mkldnn_dump_jit_uni_lrn_fwd_kernel_f32.5.bin
+    mkldnn_dump_jit_uni_reorder_kernel_f32.6.bin
+    mkldnn_dump_jit_uni_pool_kernel_f32.7.bin
+
 To open these files any disassembler can be used. For example:
 
 ```
-    $ xed -ir mkldnn_dump_jit_avx2_conv_fwd_kernel_f32.0.bin
-    XDIS 0: PUSH      BASE       53                       push ebx
-    XDIS 1: PUSH      BASE       55                       push ebp
-    XDIS 2: BINARY    BASE       41                       inc ecx
-    XDIS 3: PUSH      BASE       54                       push esp
-    XDIS 4: BINARY    BASE       41                       inc ecx
-    XDIS 5: PUSH      BASE       55                       push ebp
-    XDIS 6: BINARY    BASE       41                       inc ecx
-    XDIS 7: PUSH      BASE       56                       push esi
-    XDIS 8: BINARY    BASE       41                       inc ecx
-    XDIS 9: PUSH      BASE       57                       push edi
-    XDIS a: BINARY    BASE       48                       dec eax
-    XDIS b: DATAXFER  BASE       8B07                     mov eax, dword ptr [edi]
-    XDIS d: BINARY    BASE       48                       dec eax
-    XDIS e: DATAXFER  BASE       8B7708                   mov esi, dword ptr [edi+0x8]
-    XDIS 11: BINARY    BASE       48                       dec eax
-    XDIS 12: DATAXFER  BASE       8B5710                   mov edx, dword ptr [edi+0x10]
-    XDIS 15: BINARY    BASE       48                       dec eax
-    XDIS 16: DATAXFER  BASE       8B5F18                   mov ebx, dword ptr [edi+0x18]
-    XDIS 19: BINARY    BASE       48                       dec eax
-    XDIS 1a: DATAXFER  BASE       8B4F40                   mov ecx, dword ptr [edi+0x40]
-    XDIS 1d: BINARY    BASE       44                       inc esp
-    XDIS 1e: DATAXFER  BASE       8B6F70                   mov ebp, dword ptr [edi+0x70]
+    $ xed -64 -ir mkldnn_dump_jit_avx2_conv_fwd_kernel_f32.1.bin
+    XDIS 0: PUSH      BASE       53                       push rbx
+    XDIS 1: PUSH      BASE       55                       push rbp
+    XDIS 2: PUSH      BASE       4154                     push r12
+    XDIS 4: PUSH      BASE       4155                     push r13
+    XDIS 6: PUSH      BASE       4156                     push r14
+    XDIS 8: PUSH      BASE       4157                     push r15
+    XDIS a: DATAXFER  BASE       488B07                   mov rax, qword ptr [rdi]
+    XDIS d: DATAXFER  BASE       488B7708                 mov rsi, qword ptr [rdi+0x8]
+    XDIS 11: DATAXFER  BASE       488B5710                 mov rdx, qword ptr [rdi+0x10]
+    XDIS 15: DATAXFER  BASE       488B5F18                 mov rbx, qword ptr [rdi+0x18]
+    XDIS 19: DATAXFER  BASE       488B8F98000000           mov rcx, qword ptr [rdi+0x98]
+    XDIS 20: DATAXFER  BASE       448BAF00010000           mov r13d, dword ptr [rdi+0x100]
+    XDIS 27: DATAXFER  BASE       4C8BB7D0000000           mov r14, qword ptr [rdi+0xd0]
+    XDIS 2e: BINARY    BASE       4983FE04                 cmp r14, 0x4
+    XDIS 32: COND_BR   BASE       0F85EF030000             jnz 0x427
+    XDIS 38: LOGICAL   BASE       4D31DB                   xor r11, r11
+    XDIS 3b: LOGICAL   BASE       41F7C510000000           test r13d, 0x10
+    XDIS 42: COND_BR   BASE       0F8558000000             jnz 0xa0
+    XDIS 48: DATAXFER  AVX        C5FC1006                 vmovups ymm0, ymmword ptr [rsi]
+    XDIS 4c: DATAXFER  AVX        C5FC104E20               vmovups ymm1, ymmword ptr [rsi+0x20]
+    XDIS 51: DATAXFER  AVX        C5FC105640               vmovups ymm2, ymmword ptr [rsi+0x40]
+    XDIS 56: DATAXFER  AVX        C5FC109E207A0100         vmovups ymm3, ymmword ptr [rsi+0x17a20]
     ...
 ```
 
