@@ -5,7 +5,7 @@ _mklversion=2019.0.5.20190502
 _mklpackage=mklml_win_${_mklversion}
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=0.19
+pkgver=0.20.6
 pkgrel=1
 pkgdesc="MKL-DNN - Intel(R) Math Kernel Library for Deep Neural Networks (mingw-w64)"
 arch=('x86_64')
@@ -16,8 +16,8 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-gcc" "${MINGW_PACKAGE_PREFIX}-cmake")
 options=('staticlibs' '!strip')
 install=${_realname}.install
 source=(${_realname}-${pkgver}.tar.gz::https://github.com/intel/mkl-dnn/archive/v${pkgver}.tar.gz
-        ${_mklpackage}.zip::https://github.com/intel/mkl-dnn/releases/download/v${pkgver}/${_mklpackage}.zip)
-sha256sums=('ba39da6adb263df05c4ca2a120295641fc97be75b588922e4274cb628dbe1dcd'
+        ${_mklpackage}.zip::https://github.com/intel/mkl-dnn/releases/download/v0.20/${_mklpackage}.zip)
+sha256sums=('74675e93eef339ff3d9a9be95c15d0c7ad8736a5356c23428ab2e33dcdb8e3e1'
             '535857b17643d7f7546b58fc621244e7cfcc4fff2aa2ebd3fc5b4e126bfc36cf')
 
 prepare() {
